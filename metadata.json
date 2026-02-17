@@ -1,0 +1,5 @@
+{
+  "name": "Bender archivisionAI",
+  "description": "Herramienta impulsada por IA para arquitectos y diseñadores. Genera renders fotorrealistas y ediciones de diseño a partir de bocetos o capturas de pantalla utilizando Gemini 2.5 Flash Image.",
+  "requestFramePermissions": []
+}

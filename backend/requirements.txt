@@ -1,0 +1,6 @@
+flask
+flask-cors
+ezdxf
+matplotlib
+google-genai
+python-dotenv
