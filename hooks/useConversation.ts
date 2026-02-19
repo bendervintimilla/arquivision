@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, type Dispatch, type SetStateAction } from 'react';
 import { DesignStep } from '../types';
 import {
   createConversation,
@@ -19,7 +19,7 @@ interface UseConversationOptions {
 
 interface UseConversationReturn {
   steps: DesignStep[];
-  setSteps: React.Dispatch<React.SetStateAction<DesignStep[]>>;
+  setSteps: Dispatch<SetStateAction<DesignStep[]>>;
   currentConversationId: string | null;
   conversations: DBConversation[];
   loading: boolean;
@@ -38,6 +38,19 @@ export function useConversation({
 }: UseConversationOptions): UseConversationReturn {
   const [steps, setSteps] = useState<DesignStep[]>([]);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
+
+  // Revoke blob: object URLs to prevent memory leaks
+  const revokeStepUrls = useCallback((stepsToClean: DesignStep[]) => {
+    for (const step of stepsToClean) {
+      if (step.images) {
+        for (const img of step.images) {
+          if (img.startsWith('blob:')) {
+            URL.revokeObjectURL(img);
+          }
+        }
+      }
+    }
+  }, []);
   const [conversations, setConversations] = useState<DBConversation[]>([]);
   const [loading, setLoading] = useState(false);
   const sequenceRef = useRef(0);
@@ -81,6 +94,8 @@ export function useConversation({
   const loadConversation = useCallback(async (conversationId: string) => {
     setLoading(true);
     try {
+      // Clean up old object URLs before replacing
+      revokeStepUrls(steps);
       const messages = await loadMessages(conversationId);
       const designSteps = await messagesToDesignSteps(messages);
       setSteps(designSteps);
@@ -142,6 +157,7 @@ export function useConversation({
   }, [userId, currentConversationId, steps]);
 
   const reset = useCallback(() => {
+    revokeStepUrls(steps);
     setSteps([]);
     setCurrentConversationId(null);
     sequenceRef.current = 0;

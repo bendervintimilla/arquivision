@@ -1,5 +1,5 @@
 
-import DxfParser from 'https://esm.sh/dxf-parser@1.1.2';
+import DxfParser from 'dxf-parser';
 import { FloorPlan } from '../types';
 import { parseRawEntitiesToFloorPlan, renderPlanToCanvas, MOCK_FLOOR_PLAN } from './cadService';
 
@@ -36,59 +36,59 @@ export const processDxf = async (file: File): Promise<{ image: string, manifest:
     reader.onload = (e) => {
       try {
         const content = e.target?.result as string;
-        
+
         // --- BACKEND SIMULATION ---
         // If it's a binary DWG (starts with AC), we simulate a backend conversion by returning our MOCK_FLOOR_PLAN.
         // This is necessary because binary DWG conversion is impossible in a pure browser environment without a server.
         if (content.startsWith('AC') || file.name.toLowerCase().endsWith('.dwg')) {
-           
-           // Render the Mock Plan to an image for the thumbnail
-           const canvas = document.createElement('canvas');
-           canvas.width = 1024; canvas.height = 768;
-           renderPlanToCanvas(MOCK_FLOOR_PLAN, canvas);
-           
-           resolve({ 
-             image: canvas.toDataURL('image/png'), 
-             manifest: `[BACKEND SIMULATION] Converted ${file.name} to vector data.`,
-             floorPlan: MOCK_FLOOR_PLAN // <--- KEY: Return vector data so the editor works
-           });
-           return;
+
+          // Render the Mock Plan to an image for the thumbnail
+          const canvas = document.createElement('canvas');
+          canvas.width = 1024; canvas.height = 768;
+          renderPlanToCanvas(MOCK_FLOOR_PLAN, canvas);
+
+          resolve({
+            image: canvas.toDataURL('image/png'),
+            manifest: `[BACKEND SIMULATION] Converted ${file.name} to vector data.`,
+            floorPlan: MOCK_FLOOR_PLAN // <--- KEY: Return vector data so the editor works
+          });
+          return;
         }
 
         // Handle Text-based DXF (Real parsing)
         const parser = new DxfParser();
         let dxf = null;
         try {
-            dxf = parser.parseSync(content);
+          dxf = parser.parseSync(content);
         } catch (parseErr) {
-            console.error("DXF Parse Error", parseErr);
-            throw new Error("Invalid DXF structure");
+          console.error("DXF Parse Error", parseErr);
+          throw new Error("Invalid DXF structure");
         }
 
         if (!dxf || !dxf.entities) throw new Error("No entities found");
-        
+
         const floorPlan = parseRawEntitiesToFloorPlan(dxf.entities, file.name);
-        
+
         const canvas = document.createElement('canvas');
         canvas.width = 2048;
         canvas.height = 1536;
         renderPlanToCanvas(floorPlan, canvas);
 
-        resolve({ 
-            image: canvas.toDataURL('image/png'), 
-            manifest: `Parsed ${dxf.entities.length} vector entities.`, 
-            floorPlan 
+        resolve({
+          image: canvas.toDataURL('image/png'),
+          manifest: `Parsed ${dxf.entities.length} vector entities.`,
+          floorPlan
         });
 
       } catch (err) {
         console.warn("File processing failed.", err);
         resolve({
-            image: "",
-            manifest: "Error parsing file."
+          image: "",
+          manifest: "Error parsing file."
         });
       }
     };
-    
+
     // Read as text. For binary DWG, this produces garbage characters, but enough for us to detect the 'AC' header.
     reader.readAsText(file);
   });

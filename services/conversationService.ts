@@ -146,10 +146,7 @@ export async function saveMessage(
   if (error) throw new Error(`Failed to save message: ${error.message}`);
 
   // Update conversation message count and timestamp
-  await supabase.rpc('increment_message_count', { conv_id: conversationId }).catch(() => {
-    // Fallback: manual update
-    updateConversation(conversationId, { message_count: sequenceOrder + 1 });
-  });
+  await updateConversation(conversationId, { message_count: sequenceOrder + 1 });
 
   return data.id;
 }
@@ -285,7 +282,7 @@ export async function getUserPreferences(userId: string): Promise<DBUserPreferen
     .from('user_preferences')
     .select('*')
     .eq('user_id', userId)
-    .single();
+    .maybeSingle();
 
   if (error) return null;
   return data;

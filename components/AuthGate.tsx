@@ -6,7 +6,7 @@ interface AuthGateProps {
   children: React.ReactNode;
 }
 
-const SKIP_AUTH = !import.meta.env.VITE_REQUIRE_AUTH;
+const SKIP_AUTH = import.meta.env.VITE_REQUIRE_AUTH !== 'true';
 
 export const AuthGate: React.FC<AuthGateProps> = ({ children }) => {
   const { user, loading } = useAuth();
