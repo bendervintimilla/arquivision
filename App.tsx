@@ -14,9 +14,6 @@ type ActiveTab = 'PHOTO' | 'PLAN' | 'VIDEO';
 
 const App: React.FC = () => {
   const { user } = useAuth();
-  // AuthGate guarantees user is present at this point
-  // In local dev without VITE_REQUIRE_AUTH, fall back to a dev user
-  const activeUser = user || { id: 'local-dev-user', email: 'dev@localhost' } as any;
   const [activeTab, setActiveTab] = useState<ActiveTab>('PHOTO');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [conversations, setConversations] = useState<DBConversation[]>([]);
@@ -28,15 +25,15 @@ const App: React.FC = () => {
 
   // Load gallery from DB on mount
   useEffect(() => {
-    if (activeUser) {
+    if (user) {
       loadGalleryFromDB();
     }
-  }, [activeUser]);
+  }, [user]);
 
   const loadGalleryFromDB = useCallback(async () => {
-    if (!activeUser) return;
+    if (!user) return;
     try {
-      const assets = await loadGallery(activeUser.id);
+      const assets = await loadGallery(user.id);
       const galleryItems: RenderAsset[] = await Promise.all(
         assets.map(async (a: DBAsset) => {
           let url = a.public_url || '';
@@ -61,30 +58,30 @@ const App: React.FC = () => {
     } catch (e) {
       console.error('Failed to load gallery:', e);
     }
-  }, [activeUser]);
+  }, [user]);
 
   // Load conversations for sidebar
   const refreshConversations = useCallback(async () => {
-    if (!activeUser) return;
+    if (!user) return;
     try {
-      const convos = await listConversations(activeUser.id);
+      const convos = await listConversations(user.id);
       setConversations(convos);
     } catch (e) {
       console.error('Failed to load conversations:', e);
     }
-  }, [activeUser]);
+  }, [user]);
 
   useEffect(() => {
-    if (activeUser && sidebarOpen) {
+    if (user && sidebarOpen) {
       refreshConversations();
     }
-  }, [activeUser, sidebarOpen]);
+  }, [user, sidebarOpen]);
 
   const handleAssetCreated = (asset: RenderAsset) => {
     setGallery(prev => [asset, ...prev]);
   };
 
-  if (!activeUser) return null;
+  if (!user) return null;
 
   return (
     <div className="h-screen flex flex-col bg-slate-950 text-slate-100 overflow-hidden">
@@ -139,7 +136,7 @@ const App: React.FC = () => {
         <div className={`w-full h-full ${activeTab === 'PHOTO' ? 'block' : 'hidden'}`}>
           <PhotoEnhancer
             onAssetCreated={handleAssetCreated}
-            userId={activeUser.id}
+            userId={user.id}
             loadConversationId={loadConversationId}
             onConversationLoaded={() => setLoadConversationId(null)}
             triggerNewConversation={triggerNewConv}

@@ -1,10 +1,15 @@
 
-import { GoogleGenAI } from "@google/genai";
-import { MODEL_NAME, FAST_MODEL_NAME } from "../constants";
 import { AUTOCAD_PROMPT_LOGIC, buildIntentClassifierPrompt, buildSceneAnalysisPrompt, buildEditPrompt } from "./autocadService";
 import { PlanAnalysis, Room, FloorPlan, EditIntent, SceneAnalysis, PageRole } from "../types";
 import { AIContext, formatContextForPrompt } from "./contextService";
 import { backendApi } from "./backendApiService";
+
+// SECURITY: All Gemini API calls go through the backend proxy.
+// The API key is NEVER present in the frontend bundle.
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
+if (!BACKEND_URL) {
+  console.error('[SECURITY] VITE_BACKEND_URL is not configured. AI features will not work.');
+}
 
 /**
  * Convert a blob: URL to a data:base64 string.
@@ -32,18 +37,21 @@ async function ensureBase64(urlOrData: string | null | undefined): Promise<strin
   return urlOrData;
 }
 
-// Global instance (fallback when backend unavailable)
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
-// Flag: use backend proxy or direct API
-const USE_BACKEND_PROXY = !!import.meta.env.VITE_BACKEND_URL;
-
 // --- Scene analysis cache (per-session) ---
 let cachedSceneAnalysis: SceneAnalysis | null = null;
 let cachedSceneImageHash: string | null = null;
 
-function simpleHash(str: string): string {
-  return str.slice(0, 100) + str.length.toString();
+/**
+ * Compute a better hash for cache keying base64 images.
+ * Samples characters from different positions to avoid the identical prefix problem.
+ */
+function imageHash(str: string): string {
+  if (str.length < 200) return str;
+  // Sample from multiple positions + length for uniqueness
+  const s1 = str.slice(100, 200);
+  const s2 = str.slice(Math.floor(str.length / 2), Math.floor(str.length / 2) + 100);
+  const s3 = str.slice(-100);
+  return `${s1}|${s2}|${s3}|${str.length}`;
 }
 
 export function clearSceneCache(): void {
@@ -60,21 +68,9 @@ export function clearSceneCache(): void {
  * Uses gemini-3-flash for speed.
  */
 export const classifyIntent = async (userCommand: string): Promise<EditIntent> => {
-  const prompt = buildIntentClassifierPrompt(userCommand);
-
   try {
-    if (USE_BACKEND_PROXY) {
-      const result = await backendApi.classifyIntent({ command: userCommand });
-      return result.intent;
-    }
-
-    const response = await ai.models.generateContent({
-      model: FAST_MODEL_NAME,
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      config: { responseMimeType: 'application/json' }
-    });
-
-    return JSON.parse(response.text || '{}') as EditIntent;
+    const result = await backendApi.classifyIntent({ command: userCommand });
+    return result.intent;
   } catch (e) {
     console.error("Intent classification failed, using defaults:", e);
     return {
@@ -94,39 +90,18 @@ export const classifyIntent = async (userCommand: string): Promise<EditIntent> =
  * Uses gemini-3-flash vision for speed.
  */
 export const analyzeScene = async (imageBase64: string): Promise<SceneAnalysis> => {
-  const hash = simpleHash(imageBase64);
+  const hash = imageHash(imageBase64);
 
   // Return cached if same image
   if (cachedSceneAnalysis && cachedSceneImageHash === hash) {
     return cachedSceneAnalysis;
   }
 
-  const prompt = buildSceneAnalysisPrompt();
-
   try {
-    if (USE_BACKEND_PROXY) {
-      const result = await backendApi.analyzeScene({ image: imageBase64 });
-      cachedSceneAnalysis = result.analysis;
-      cachedSceneImageHash = hash;
-      return result.analysis;
-    }
-
-    const clean = imageBase64.split(',')[1] || imageBase64;
-    const response = await ai.models.generateContent({
-      model: FAST_MODEL_NAME,
-      contents: {
-        parts: [
-          { inlineData: { data: clean, mimeType: 'image/png' } },
-          { text: prompt }
-        ]
-      },
-      config: { responseMimeType: 'application/json' }
-    });
-
-    const analysis = JSON.parse(response.text || '{}') as SceneAnalysis;
-    cachedSceneAnalysis = analysis;
+    const result = await backendApi.analyzeScene({ image: imageBase64 });
+    cachedSceneAnalysis = result.analysis;
     cachedSceneImageHash = hash;
-    return analysis;
+    return result.analysis;
   } catch (e) {
     console.error("Scene analysis failed:", e);
     return {
@@ -195,41 +170,18 @@ const applyWatermark = async (base64Image: string, text: string): Promise<string
 // EXISTING SERVICES (upgraded)
 // ==========================================
 
-export const auditArchitecture = async (manifest: string): Promise<string> => {
-  try {
-    const response = await ai.models.generateContent({
-      model: FAST_MODEL_NAME,
-      contents: [{ role: 'user', parts: [{ text: AUTOCAD_PROMPT_LOGIC.SEMANTIC_AUDIT(manifest) }] }]
-    });
-    return response.text || "Audit data unavailable.";
-  } catch (e) {
-    console.error("Audit error", e);
-    return "Geometric analysis pending...";
-  }
+export const auditArchitecture = async (_manifest: string): Promise<string> => {
+  // TODO: Implement via backend proxy endpoint when needed
+  return "Geometric analysis pending...";
 };
 
 export const analyzePlanImage = async (base64Image: string): Promise<PlanAnalysis> => {
-  const cleanBase64 = base64Image.split(',')[1] || base64Image;
   try {
-    if (USE_BACKEND_PROXY) {
-      const { result } = await backendApi.analyzePlan({
-        image: base64Image,
-        prompt: AUTOCAD_PROMPT_LOGIC.PLAN_ANALYSIS,
-      });
-      return result as PlanAnalysis;
-    }
-
-    const response = await ai.models.generateContent({
-      model: FAST_MODEL_NAME,
-      contents: {
-        parts: [
-          { inlineData: { data: cleanBase64, mimeType: 'image/png' } },
-          { text: AUTOCAD_PROMPT_LOGIC.PLAN_ANALYSIS }
-        ]
-      },
-      config: { responseMimeType: 'application/json' }
+    const { result } = await backendApi.analyzePlan({
+      image: base64Image,
+      prompt: AUTOCAD_PROMPT_LOGIC.PLAN_ANALYSIS,
     });
-    return JSON.parse(response.text || '{}') as PlanAnalysis;
+    return result as PlanAnalysis;
   } catch (e) {
     console.error("Plan analysis failed", e);
     return { rooms: [], notes: "Analysis failed due to model error." };
@@ -254,24 +206,10 @@ export const modifyPlanVector = async (plan: FloorPlan, instruction: string): Pr
     `;
 
   try {
-    if (USE_BACKEND_PROXY) {
-      const { result } = await backendApi.modifyPlanVector({
-        prompt,
-        systemInstruction: AUTOCAD_PROMPT_LOGIC.buildContextualInstruction('', 'PLAN'),
-      });
-      return result;
-    }
-
-    const response = await ai.models.generateContent({
-      model: FAST_MODEL_NAME,
-      contents: { parts: [{ text: prompt }] },
-      config: {
-        responseMimeType: 'application/json',
-        systemInstruction: AUTOCAD_PROMPT_LOGIC.buildContextualInstruction('', 'PLAN')
-      }
+    const { result } = await backendApi.modifyPlanVector({
+      prompt,
+      systemInstruction: AUTOCAD_PROMPT_LOGIC.buildContextualInstruction('', 'PLAN'),
     });
-
-    const result = JSON.parse(response.text || '{}');
     return result;
   } catch (e) {
     console.error("Failed to parse vector modification response", e);
@@ -345,61 +283,19 @@ export const generateArchitecturalVariations = async (
     finalPrompt = `REFERENCE IMAGE: A second image is provided as visual reference. Use elements, styles, materials, or details from it as the user requests.\n\nUSER REQUEST: ${prompt}`;
   }
 
-  // --- IMAGE GENERATION ---
-  if (USE_BACKEND_PROXY) {
-    try {
-      const { images } = await backendApi.generateImage({
-        prompt: finalPrompt,
-        systemInstruction,
-        image: normalizedImg,
-        imageMime: mime,
-        mask: normalizedMask || undefined,
-        referenceImage: normalizedRef || undefined,
-        referenceImageMime: 'image/png',
-      });
-
-      if (!images || images.length === 0) throw new Error("No image generated");
-      const result = initials ? [await applyWatermark(images[0], initials)] : [images[0]];
-      return { images: result, sceneAnalysis, intent, promptSent: finalPrompt };
-    } catch (e) {
-      console.error("Backend proxy failed, falling back to direct API:", e);
-    }
-  }
-
-  // Direct API call (fallback)
-  const parts: any[] = [];
-
-  if (normalizedImg) {
-    const clean = normalizedImg.split(',')[1] || normalizedImg;
-    parts.push({ inlineData: { data: clean, mimeType: mime } });
-  }
-
-  if (normalizedMask && normalizedImg) {
-    const cleanMask = normalizedMask.split(',')[1] || normalizedMask;
-    parts.push({ inlineData: { data: cleanMask, mimeType: 'image/png' } });
-  }
-
-  if (normalizedRef) {
-    const cleanRef = normalizedRef.split(',')[1] || normalizedRef;
-    parts.push({ inlineData: { data: cleanRef, mimeType: 'image/png' } });
-  }
-
-  parts.push({ text: finalPrompt });
-
-  const res = await ai.models.generateContent({
-    model: MODEL_NAME,
-    contents: parts,
-    config: {
-      responseModalities: ['Image'],
-      systemInstruction
-    }
+  // --- IMAGE GENERATION (backend proxy only — API key never touches the frontend) ---
+  const { images } = await backendApi.generateImage({
+    prompt: finalPrompt,
+    systemInstruction,
+    image: normalizedImg,
+    imageMime: mime,
+    mask: normalizedMask || undefined,
+    referenceImage: normalizedRef || undefined,
+    referenceImageMime: 'image/png',
   });
 
-  const data = res.candidates?.[0]?.content?.parts.find(p => p.inlineData)?.inlineData?.data;
-  if (!data) throw new Error("No image generated");
-
-  const out = `data:image/png;base64,${data}`;
-  const result = initials ? [await applyWatermark(out, initials)] : [out];
+  if (!images || images.length === 0) throw new Error("No image generated");
+  const result = initials ? [await applyWatermark(images[0], initials)] : [images[0]];
   return { images: result, sceneAnalysis, intent, promptSent: finalPrompt };
 };
 
@@ -410,57 +306,18 @@ export const generateArchitecturalVideo = async (
   base64Image: string,
   prompt: string
 ): Promise<string> => {
-
   // Normalize blob: URLs to base64
   const normalizedImage = await ensureBase64(base64Image);
   if (!normalizedImage) throw new Error("Failed to process image for video");
 
-  if (USE_BACKEND_PROXY) {
-    try {
-      const { video } = await backendApi.generateVideo({
-        image: normalizedImage,
-        prompt,
-      });
-      const response = await fetch(video);
-      const blob = await response.blob();
-      return URL.createObjectURL(blob);
-    } catch (e) {
-      console.error("Backend video proxy failed, falling back:", e);
-    }
-  }
-
-  const apiKey = process.env.API_KEY;
-  if (!apiKey) throw new Error("API Key missing");
-
-  const videoAi = new GoogleGenAI({ apiKey });
-  const cleanBase64 = normalizedImage.split(',')[1] || normalizedImage;
-
-  let operation = await videoAi.models.generateVideos({
-    model: 'veo-3.1-fast-generate-preview',
-    prompt: `STRICT RULE: Do NOT add, remove, or modify ANY objects, furniture, or elements in the scene. The video must show EXACTLY what is in the source image — nothing more, nothing less. Only animate camera movement and natural lighting. Smooth cinematic architectural flythrough: ${prompt}`,
-    image: {
-      imageBytes: cleanBase64,
-      mimeType: 'image/png',
-    },
-    config: {
-      numberOfVideos: 1,
-      resolution: '720p',
-      aspectRatio: '16:9'
-    }
+  // SECURITY: Video generation goes through backend proxy only
+  const { video } = await backendApi.generateVideo({
+    image: normalizedImage,
+    prompt,
   });
 
-  while (!operation.done) {
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    operation = await videoAi.operations.getVideosOperation({ operation: operation });
-  }
-
-  const videoUri = operation.response?.generatedVideos?.[0]?.video?.uri;
-  if (!videoUri) throw new Error("Video generation failed to return URI");
-
-  const videoRes = await fetch(`${videoUri}&key=${apiKey}`);
-  if (!videoRes.ok) {
-    throw new Error(`Failed to fetch video bytes: ${videoRes.statusText}`);
-  }
-  const blob = await videoRes.blob();
+  // The backend returns a data: URL — convert to blob for playback
+  const response = await fetch(video);
+  const blob = await response.blob();
   return URL.createObjectURL(blob);
 };

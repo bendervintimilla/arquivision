@@ -6,7 +6,9 @@ set -e
 
 PROJECT_ID="gen-lang-client-0947004571"
 REGION="europe-west1"
-GEMINI_API_KEY="***REMOVED_GEMINI_KEY***"
+
+# SECURITY: API key is NEVER hardcoded. Read from environment.
+GEMINI_API_KEY="${GEMINI_API_KEY:?ERROR: Set GEMINI_API_KEY env var before deploying}"
 SUPABASE_URL="https://axprxywbbrrlypfaycpb.supabase.co"
 SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF4cHJ4eXdiYnJybHlwZmF5Y3BiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkxNjEzODksImV4cCI6MjA4NDczNzM4OX0.0iIydaM-iFcabn-q63dqK_1CTLX8LRW_mGOr8qT0pZ0"
 
@@ -58,12 +60,13 @@ echo "🚀 Step 2/2: Deploying Frontend..."
 echo "   (This may take 3-7 minutes on first deploy)"
 cd "$SCRIPT_DIR"
 
+# SECURITY: Frontend does NOT receive the GEMINI_API_KEY.
+# Only public VITE_ variables are passed as build args.
 gcloud run deploy archivision-frontend \
   --source . \
   --project "$PROJECT_ID" \
   --region "$REGION" \
   --allow-unauthenticated \
-  --build-arg="GEMINI_API_KEY=$GEMINI_API_KEY" \
   --build-arg="VITE_SUPABASE_URL=$SUPABASE_URL" \
   --build-arg="VITE_SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY" \
   --build-arg="VITE_BACKEND_URL=$BACKEND_URL" \

@@ -16,7 +16,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, origins="*")
+
+# SECURITY: Restrict CORS to known frontend origins only.
+# Set ALLOWED_ORIGINS env var as comma-separated list for custom domains.
+ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "").split(",") if os.environ.get("ALLOWED_ORIGINS") else [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "https://archivision-frontend-555543910452.us-central1.run.app",
+    "https://archivision-frontend-555543910452.europe-west1.run.app",
+]
+CORS(app, origins=ALLOWED_ORIGINS)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
