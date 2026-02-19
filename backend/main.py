@@ -21,9 +21,9 @@ app = Flask(__name__)
 # Set ALLOWED_ORIGINS env var as comma-separated list for custom domains.
 ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "").split(",") if os.environ.get("ALLOWED_ORIGINS") else [
     "http://localhost:3000",
+    "http://localhost:3001",
     "http://localhost:5173",
-    "https://archivision-frontend-555543910452.us-central1.run.app",
-    "https://archivision-frontend-555543910452.europe-west1.run.app",
+    "https://archivision-frontend-164156113562.europe-west1.run.app",
 ]
 CORS(app, origins=ALLOWED_ORIGINS)
 
