@@ -67,9 +67,7 @@ gcloud run deploy archivision-frontend \
   --project "$PROJECT_ID" \
   --region "$REGION" \
   --allow-unauthenticated \
-  --build-arg="VITE_SUPABASE_URL=$SUPABASE_URL" \
-  --build-arg="VITE_SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY" \
-  --build-arg="VITE_BACKEND_URL=$BACKEND_URL" \
+  --set-build-env-vars="VITE_SUPABASE_URL=$SUPABASE_URL,VITE_SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY,VITE_BACKEND_URL=$BACKEND_URL" \
   --memory=256Mi \
   --quiet
 

@@ -12,11 +12,15 @@ RUN npm ci
 # Copy source code
 COPY . .
 
-# SECURITY: GEMINI_API_KEY is NOT included here — it only lives on the backend.
-# Only public-safe VITE_ variables are baked into the frontend build.
-ENV VITE_SUPABASE_URL=https://axprxywbbrrlypfaycpb.supabase.co
-ENV VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF4cHJ4eXdiYnJybHlwZmF5Y3BiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkxNjEzODksImV4cCI6MjA4NDczNzM4OX0.0iIydaM-iFcabn-q63dqK_1CTLX8LRW_mGOr8qT0pZ0
-ENV VITE_BACKEND_URL=https://archivision-backend-164156113562.europe-west1.run.app
+ARG VITE_SUPABASE_URL=https://axprxywbbrrlypfaycpb.supabase.co
+ARG VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF4cHJ4eXdiYnJybHlwZmF5Y3BiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkxNjEzODksImV4cCI6MjA4NDczNzM4OX0.0iIydaM-iFcabn-q63dqK_1CTLX8LRW_mGOr8qT0pZ0
+ARG VITE_BACKEND_URL=https://archivision-backend-d4v7u54w5a-ew.a.run.app
+ARG VITE_REQUIRE_AUTH=true
+
+ENV VITE_SUPABASE_URL=$VITE_SUPABASE_URL
+ENV VITE_SUPABASE_ANON_KEY=$VITE_SUPABASE_ANON_KEY
+ENV VITE_BACKEND_URL=$VITE_BACKEND_URL
+ENV VITE_REQUIRE_AUTH=$VITE_REQUIRE_AUTH
 
 # Build
 RUN npm run build

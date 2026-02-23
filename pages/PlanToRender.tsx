@@ -306,7 +306,7 @@ export const PlanToRender: React.FC<PlanToRenderProps> = ({ onAssetCreated }) =>
       }
     } else {
       // RENDER MODE (Image Generation)
-      let finalPrompt = `[RENDER MODE] Create a photorealistic 3D render: ${currentPrompt}. Perspective view.`;
+      let finalPrompt = `[ARCHITECTURAL PLAN → 3D RENDER] Create a photorealistic 3D render from this floor plan. Requirements: ${currentPrompt}. Maintain exact room proportions from the plan. Perspective view with natural lighting.${auditText ? ` Plan context: ${auditText}` : ''}`;
 
       const userStep: DesignStep = {
         id: `u-${Date.now()}`,

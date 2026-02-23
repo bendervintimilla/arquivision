@@ -1,7 +1,7 @@
 
 import { AUTOCAD_PROMPT_LOGIC, buildIntentClassifierPrompt, buildSceneAnalysisPrompt, buildEditPrompt } from "./autocadService";
-import { PlanAnalysis, Room, FloorPlan, EditIntent, SceneAnalysis, PageRole } from "../types";
-import { AIContext, formatContextForPrompt } from "./contextService";
+import { PlanAnalysis, Room, FloorPlan, EditIntent, SceneAnalysis, PageRole, EditContextPreferences } from "../types";
+import { AIContext, formatContextForPrompt, formatContextForImagePrompt } from "./contextService";
 import { backendApi } from "./backendApiService";
 
 // SECURITY: All Gemini API calls go through the backend proxy.
@@ -234,7 +234,8 @@ export const generateArchitecturalVariations = async (
   context?: AIContext,
   pageRole: PageRole = 'PHOTO',
   editPreferences?: { preserveLayout: boolean; preserveLighting: boolean; preservePerspective: boolean },
-  referenceImage?: string | null
+  referenceImage?: string | null,
+  useFastModel: boolean = false
 ): Promise<{ images: string[]; sceneAnalysis: SceneAnalysis | null; intent: EditIntent | null; promptSent: string }> => {
 
   // --- NORMALIZE ALL IMAGES: convert blob: URLs to data:base64 ---
@@ -263,7 +264,7 @@ export const generateArchitecturalVariations = async (
 
       // Step 3: Build smart prompt
       if (intent.mode !== 'GENERATE') {
-        // Bug #7 fix: Apply user's explicit UI preferences over AI classification
+        // Apply user's explicit UI preferences over AI classification
         if (editPreferences) {
           intent.preserveLayout = editPreferences.preserveLayout;
           intent.preserveLighting = editPreferences.preserveLighting;
@@ -274,13 +275,25 @@ export const generateArchitecturalVariations = async (
       }
     } catch (e) {
       console.warn('[EditEngine] Intelligence pipeline failed, using raw prompt:', e);
-      // Fallback: use the raw prompt
     }
   }
 
-  // If reference image provided but no smart prompt, add reference context to raw prompt
+  // --- INJECT CONVERSATIONAL CONTEXT INTO THE PROMPT ITSELF ---
+  if (context) {
+    const contextPromptBlock = formatContextForImagePrompt(context);
+    if (contextPromptBlock) {
+      finalPrompt = `${contextPromptBlock}\n\n${finalPrompt}`;
+    }
+  }
+
+  // --- MASK CONTEXT: Tell Gemini exactly how to use the mask ---
+  if (normalizedMask) {
+    finalPrompt = `MASK IMAGE PROVIDED: A black-and-white mask image is included alongside the main image. WHITE areas in the mask indicate the EXACT regions where you must apply changes. BLACK areas must remain COMPLETELY UNTOUCHED — do not modify anything outside the white mask region. Focus ALL edits within the masked area only.\n\n${finalPrompt}`;
+  }
+
+  // --- REFERENCE IMAGE: Strong structured context ---
   if (normalizedRef && finalPrompt === prompt) {
-    finalPrompt = `REFERENCE IMAGE: A second image is provided as visual reference. Use elements, styles, materials, or details from it as the user requests.\n\nUSER REQUEST: ${prompt}`;
+    finalPrompt = `REFERENCE IMAGE PROVIDED:\n- IMAGE 1 (first image) is the CURRENT architectural design to modify.\n- IMAGE 2 (second image) is the STYLE/MATERIAL REFERENCE to draw inspiration from.\n- Extract materials, colors, textures, furniture styles, and architectural details from IMAGE 2.\n- Apply them to IMAGE 1 exactly as the user instructs below.\n- Do NOT copy the layout or composition of IMAGE 2 — only extract the stylistic elements.\n\nUSER REQUEST: ${prompt}`;
   }
 
   // --- IMAGE GENERATION (backend proxy only — API key never touches the frontend) ---
@@ -292,6 +305,7 @@ export const generateArchitecturalVariations = async (
     mask: normalizedMask || undefined,
     referenceImage: normalizedRef || undefined,
     referenceImageMime: 'image/png',
+    useFastModel,
   });
 
   if (!images || images.length === 0) throw new Error("No image generated");

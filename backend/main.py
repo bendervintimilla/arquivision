@@ -13,19 +13,17 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 app = Flask(__name__)
 
+# Allow large payloads (up to 50MB) for image+video workflows
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
+
 # SECURITY: Restrict CORS to known frontend origins only.
 # Set ALLOWED_ORIGINS env var as comma-separated list for custom domains.
-ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "").split(",") if os.environ.get("ALLOWED_ORIGINS") else [
-    "http://localhost:3000",
-    "http://localhost:3001",
-    "http://localhost:5173",
-    "https://archivision-frontend-164156113562.europe-west1.run.app",
-]
-CORS(app, origins=ALLOWED_ORIGINS)
+ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "").split(",") if os.environ.get("ALLOWED_ORIGINS") else ["*"]
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
@@ -482,57 +480,148 @@ Keep it under 150 words. This will be injected into future conversations as cont
 @app.route("/api/generate-video", methods=["POST"])
 @require_auth
 def generate_video():
-    """Proxy for video generation via Veo 3.1."""
+    """Proxy for video generation via Veo 3.1 — matches official SDK pattern."""
+    import traceback
+    import tempfile
+
     try:
         data = request.json
         image_base64 = data.get("image", "")
         prompt = data.get("prompt", "")
 
+        if not image_base64:
+            return jsonify({"error": "No image provided for video generation"}), 400
+
+        from google.genai import types
+
         client = get_gemini_client()
         clean = image_base64.split(",")[1] if "," in image_base64 else image_base64
+        image_bytes = base64.b64decode(clean)
+        app.logger.info(f"[generate-video] Image decoded: {len(image_bytes)} bytes")
 
-        operation = client.models.generate_videos(
-            model=VIDEO_MODEL,
-            prompt=f"STRICT RULE: Do NOT add, remove, or modify ANY objects, furniture, or elements in the scene. The video must show EXACTLY what is in the source image — nothing more, nothing less. Only animate camera movement and natural lighting. Smooth cinematic architectural flythrough: {prompt}",
-            image={
-                "image_bytes": base64.b64decode(clean),
-                "mime_type": "image/png",
-            },
-            config={
-                "number_of_videos": 1,
-                "resolution": "720p",
-                "aspect_ratio": "16:9",
-            },
+        # Detect mime type from the data URL prefix
+        mime_type = "image/png"
+        if image_base64.startswith("data:"):
+            detected = image_base64.split(";")[0].split(":")[1]
+            if detected:
+                mime_type = detected
+        app.logger.info(f"[generate-video] Image mime: {mime_type}")
+
+        # Build image using the SDK's Image type
+        source_image = types.Image(
+            image_bytes=image_bytes,
+            mime_type=mime_type,
         )
 
-        # Poll until done
-        max_polls = 60
-        for _ in range(max_polls):
-            if operation.done:
-                break
-            time.sleep(5)
-            operation = client.operations.get_videos_operation(operation=operation)
+        video_prompt = (
+            "STRICT RULE: Do NOT add, remove, or modify ANY objects, furniture, or elements in the scene. "
+            "The video must show EXACTLY what is in the source image — nothing more, nothing less. "
+            "Only animate camera movement and natural lighting. "
+            f"Smooth cinematic architectural flythrough: {prompt}"
+        )
 
-        if not operation.done:
-            return jsonify({"error": "Video generation timed out"}), 504
+        # Try with configured model, fall back to standard if fast model fails
+        models_to_try = [VIDEO_MODEL]
+        if "fast" in VIDEO_MODEL:
+            models_to_try.append("veo-3.1-generate-preview")
 
-        video_uri = None
-        if operation.response and operation.response.generated_videos:
-            video_uri = operation.response.generated_videos[0].video.uri
+        last_error = None
+        for model_name in models_to_try:
+            try:
+                app.logger.info(f"[generate-video] Starting Veo generation with model: {model_name}")
 
-        if not video_uri:
-            return jsonify({"error": "Video generation failed"}), 500
+                operation = client.models.generate_videos(
+                    model=model_name,
+                    prompt=video_prompt,
+                    image=source_image,
+                    config=types.GenerateVideosConfig(
+                        number_of_videos=1,
+                        aspect_ratio="16:9",
+                        negative_prompt="cartoon, drawing, low quality, blurry, distorted",
+                    ),
+                )
 
-        # Fetch video bytes
-        import urllib.request
-        video_url = f"{video_uri}&key={GEMINI_API_KEY}"
-        with urllib.request.urlopen(video_url) as resp:
-            video_bytes = resp.read()
+                app.logger.info(f"[generate-video] Operation started: {operation.name}")
 
-        video_b64 = base64.b64encode(video_bytes).decode()
-        return jsonify({"video": f"data:video/mp4;base64,{video_b64}"})
+                # Poll until done
+                max_polls = 60
+                for i in range(max_polls):
+                    if operation.done:
+                        break
+                    app.logger.info(f"[generate-video] Polling... attempt {i+1}/{max_polls}")
+                    time.sleep(10)
+                    operation = client.operations.get(operation)
+
+                if not operation.done:
+                    app.logger.warning(f"[generate-video] Timed out with model {model_name}")
+                    last_error = "Video generation timed out after 10 minutes"
+                    continue
+
+                # Check for errors in the operation
+                if operation.error:
+                    app.logger.warning(f"[generate-video] Operation error: {operation.error}")
+                    last_error = f"Video generation failed: {operation.error}"
+                    continue
+
+                if not operation.response or not operation.response.generated_videos:
+                    rai_msg = ""
+                    if operation.response and hasattr(operation.response, 'rai_media_filtered_count'):
+                        rai_msg = f" (RAI filtered: {operation.response.rai_media_filtered_count})"
+                    app.logger.warning(f"[generate-video] No videos returned{rai_msg}")
+                    last_error = f"Video generation completed but no video was returned{rai_msg}"
+                    continue
+
+                # SUCCESS — Download the video
+                generated_video = operation.response.generated_videos[0]
+                video_bytes = None
+
+                # Method 1: Try direct videoBytes access
+                if generated_video.video and generated_video.video.video_bytes:
+                    video_bytes = generated_video.video.video_bytes
+                    app.logger.info(f"[generate-video] Got video via direct bytes: {len(video_bytes)} bytes")
+
+                # Method 2: Download via SDK file API + save to temp
+                if not video_bytes:
+                    try:
+                        client.files.download(file=generated_video.video)
+                        tmp_path = tempfile.mktemp(suffix=".mp4")
+                        generated_video.video.save(tmp_path)
+
+                        with open(tmp_path, "rb") as f:
+                            video_bytes = f.read()
+
+                        try:
+                            os.remove(tmp_path)
+                        except OSError:
+                            pass
+
+                        app.logger.info(f"[generate-video] Got video via file download: {len(video_bytes)} bytes")
+                    except Exception as dl_err:
+                        app.logger.error(f"[generate-video] File download failed: {dl_err}")
+                        last_error = f"Video download failed: {str(dl_err)}"
+                        continue
+
+                if not video_bytes:
+                    last_error = "Video generated but could not retrieve video data"
+                    continue
+
+                video_b64 = base64.b64encode(video_bytes).decode()
+                app.logger.info(f"[generate-video] Success! Video size: {len(video_bytes)} bytes, base64 length: {len(video_b64)}")
+                return jsonify({"video": f"data:video/mp4;base64,{video_b64}"})
+
+            except Exception as model_err:
+                app.logger.warning(f"[generate-video] Model {model_name} failed: {model_err}")
+                app.logger.warning(traceback.format_exc())
+                last_error = str(model_err)
+                continue
+
+        # All models failed
+        app.logger.error(f"[generate-video] All models failed. Last error: {last_error}")
+        return jsonify({"error": last_error or "Video generation failed with all available models"}), 500
 
     except Exception as e:
+        app.logger.error(f"[generate-video] Unexpected error: {str(e)}")
+        app.logger.error(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
 
 

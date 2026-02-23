@@ -6,6 +6,7 @@ import { DESIGN_PRESETS } from '../constants';
 import { AppState, DesignStep, RenderAsset, EditContextPreferences, EditMode } from '../types';
 import { generateArchitecturalVariations, clearSceneCache } from '../services/geminiService';
 import { backendApi } from '../services/backendApiService';
+import { forceDownloadImage } from '../services/downloadHelper';
 import { useConversation } from '../hooks/useConversation';
 
 interface PhotoEnhancerProps {
@@ -35,6 +36,9 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
   // UI States
   const [isWorkspaceOpen, setIsWorkspaceOpen] = useState(true);
   const [showPresets, setShowPresets] = useState(true);
+
+  // Speed Mode: Draft (fast, lower quality) vs Final (slow, max quality)
+  const [useFastModel, setUseFastModel] = useState(false);
 
   // For Text-to-Image start
   const [startTextPrompt, setStartTextPrompt] = useState('');
@@ -208,7 +212,8 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
         aiContext,
         'PHOTO',
         editPreferences,
-        referenceImage
+        referenceImage,
+        useFastModel
       );
 
       setGenerationPhase('');
@@ -347,14 +352,32 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
 
                 <div className="flex items-center gap-4">
                   {isWorkspaceOpen && (
-                    <div className="flex items-center gap-2 animate-in fade-in zoom-in-95 duration-200 border-r border-slate-700 pr-4 mr-2">
-                      <span className="text-[10px] font-bold text-slate-500 uppercase">Initials:</span>
-                      <input
-                        type="text" value={initials} maxLength={3}
-                        onChange={(e) => setInitials(e.target.value.toUpperCase())}
-                        className="w-12 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white uppercase text-center focus:border-emerald-500 outline-none"
-                      />
-                    </div>
+                    <>
+                      <div className="flex items-center gap-2 animate-in fade-in zoom-in-95 duration-200 border-r border-slate-700 pr-4 mr-2">
+                        <span className="text-[10px] font-bold text-slate-500 uppercase">Initials:</span>
+                        <input
+                          type="text" value={initials} maxLength={3}
+                          onChange={(e) => setInitials(e.target.value.toUpperCase())}
+                          className="w-12 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white uppercase text-center focus:border-emerald-500 outline-none"
+                        />
+                      </div>
+
+                      {/* Speed Mode Toggle */}
+                      <button
+                        onClick={() => setUseFastModel(!useFastModel)}
+                        className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wide border transition-all ${useFastModel
+                          ? 'bg-amber-500/10 border-amber-500/30 text-amber-400 hover:bg-amber-500/20'
+                          : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20'
+                          }`}
+                        title={useFastModel ? 'Draft Mode: Faster generation, lower quality' : 'Final Mode: Maximum quality, slower'}
+                      >
+                        {useFastModel ? (
+                          <><svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clipRule="evenodd" /></svg>Draft</>
+                        ) : (
+                          <><svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5 2a1 1 0 011 1v1h1a1 1 0 010 2H6v1a1 1 0 01-2 0V6H3a1 1 0 010-2h1V3a1 1 0 011-1zm0 10a1 1 0 011 1v1h1a1 1 0 110 2H6v1a1 1 0 11-2 0v-1H3a1 1 0 110-2h1v-1a1 1 0 011-1zM12 2a1 1 0 01.967.744L14.146 7.2 17.5 9.134a1 1 0 010 1.732l-3.354 1.935-1.18 4.455a1 1 0 01-1.933 0L9.854 12.8 6.5 10.866a1 1 0 010-1.732l3.354-1.935 1.18-4.455A1 1 0 0112 2z" clipRule="evenodd" /></svg>Final</>
+                        )}
+                      </button>
+                    </>
                   )}
 
                   <button
@@ -425,9 +448,9 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
                                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4"><path fillRule="evenodd" d="M16.704 4.153a.75.75 0 0 1-.143 1.052l-8 10.5a.75.75 0 0 1-1.127.075l-4.5-4.5a.75.75 0 0 1 1.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 0 1 1.05-.143Z" clipRule="evenodd" /></svg>
                               </div>
                             )}
-                            <a href={img} download className="absolute bottom-4 right-4 p-2 bg-black/60 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity hover:bg-emerald-500 z-10">
+                            <button onClick={(e) => { e.stopPropagation(); forceDownloadImage(img, `render-${idx}-${imgIdx}.png`); }} className="absolute bottom-4 right-4 p-2 bg-black/60 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity hover:bg-emerald-500 z-10 border-none cursor-pointer">
                               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4"><path d="M10.75 2.75a.75.75 0 0 0-1.5 0v8.614L6.295 8.235a.75.75 0 1 0-1.09 1.03l4.25 4.5a.75.75 0 0 0 1.09 0l4.25-4.5a.75.75 0 0 0-1.09-1.03l-2.955 3.129V2.75Z" /><path d="M3.5 12.75a.75.75 0 0 0-1.5 0v2.5A2.75 2.75 0 0 0 4.75 18h10.5A2.75 2.75 0 0 0 18 15.25v-2.5a.75.75 0 0 0-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5Z" /></svg>
-                            </a>
+                            </button>
                           </div>
                         ))}
                       </div>
@@ -439,7 +462,7 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
                 <div className="flex flex-col items-center py-12 space-y-4 animate-pulse">
                   <div className="w-12 h-12 border-4 border-emerald-500/20 border-t-emerald-500 rounded-full animate-spin" />
                   <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">
-                    {generationPhase || 'Generating Concept...'}
+                    {generationPhase || (useFastModel ? '⚡ Draft Mode — Quick Generation...' : '✨ Final Mode — Maximum Quality...')}
                   </p>
                 </div>
               )}

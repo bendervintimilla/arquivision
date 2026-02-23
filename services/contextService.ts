@@ -70,6 +70,49 @@ export function formatContextForPrompt(context: AIContext): string {
 }
 
 /**
+ * Format AI context for injection directly into the IMAGE GENERATION prompt.
+ * This is different from formatContextForPrompt — it produces a concise,
+ * action-oriented block that guides Gemini's image generation with awareness
+ * of the cumulative edit history and user preferences.
+ *
+ * Purpose: Make every generation aware of what the architect has been doing,
+ * producing coherent iterative results instead of stateless one-shots.
+ */
+export function formatContextForImagePrompt(context: AIContext): string {
+  const parts: string[] = [];
+
+  // Inject user's known architectural preferences
+  if (context.userMemory) {
+    parts.push(`ARCHITECT PROFILE (known preferences): ${context.userMemory}`);
+  }
+
+  // Inject session history — the cumulative design journey
+  if (context.conversationSummary) {
+    parts.push(`DESIGN SESSION HISTORY: ${context.conversationSummary}`);
+  }
+
+  // Inject recent edit chain — this creates the "cumulative context" effect
+  if (context.recentMessages.length > 0) {
+    const editChain = context.recentMessages
+      .filter(m => m.startsWith('User:'))
+      .map(m => m.replace('User: ', '').trim())
+      .filter(Boolean);
+
+    if (editChain.length > 0) {
+      parts.push(
+        `PREVIOUS EDITS IN THIS SESSION (apply these cumulatively — each edit builds on the last):\n` +
+        editChain.map((edit, i) => `  ${i + 1}. ${edit}`).join('\n') +
+        `\nThe current request below is the NEXT iteration in this sequence.`
+      );
+    }
+  }
+
+  if (parts.length === 0) return '';
+
+  return `--- DESIGN CONTEXT (use this to maintain consistency across iterations) ---\n${parts.join('\n\n')}\n--- END DESIGN CONTEXT ---`;
+}
+
+/**
  * Update conversation summary (called every 6 messages).
  * This runs in the background - doesn't block the UI.
  */

@@ -39,6 +39,7 @@ export const backendApi = {
     mask?: string;
     referenceImage?: string | null;
     referenceImageMime?: string;
+    useFastModel?: boolean;
   }) => apiCall<{ images: string[] }>('/api/generate-image', data),
 
   analyzePlan: (data: {
