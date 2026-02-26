@@ -1,20 +1,17 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+bender-archivisionAI 🤖
+¡Bienvenido al cuartel general de la visión artificial y la archivística avanzada! Este repositorio no es solo código; es el lugar donde los algoritmos tienen más alcance que un triple desde media cancha.
 
-# Run and deploy your AI Studio app
+👑 El Invitado de Honor: Gustavo "El Basqueteer"
+Damos una bienvenida legendaria a nuestro colaborador estrella, Gustavo.
 
-This contains everything you need to run your app locally.
+En este repositorio, Gustavo no solo maneja variables, ¡las clava en el aro! Su llegada al equipo de bender-archivisionAI eleva nuestro porcentaje de acierto al 100%.
 
-View your app in AI Studio: https://ai.studio/apps/drive/1PteO0VuHMUbhdzA06VkkYm8rgTFP1VDd
+📋 Ficha Técnica del Fichaje:
+Posición: Point Guard del Código / Especialista en Slam-Dunk de Datos.
 
-## Run Locally
+Habilidad Especial: Realizar crossovers entre bases de datos sin perder el drible.
 
-**Prerequisites:**  Node.js
+Estado: Listo para dominar la pintura del backend.
 
-
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+🚀 Sobre el Proyecto
+bender-archivisionAI es el cerebro detrás de la visión. Estamos construyendo el futuro, píxel a píxel, con la precisión de un tiro libre en el último segundo del cuarto periodo.
