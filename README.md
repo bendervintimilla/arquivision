@@ -1,17 +1,30 @@
-bender-archivisionAI 🤖
-¡Bienvenido al cuartel general de la visión artificial y la archivística avanzada! Este repositorio no es solo código; es el lugar donde los algoritmos tienen más alcance que un triple desde media cancha.
+# 🏀 bender-archivisionAI | The Court 🤖
 
-👑 El Invitado de Honor: Gustavo "El Basqueteer"
-Damos una bienvenida legendaria a nuestro colaborador estrella, Gustavo.
+[![Player Status: Gustavo](https://img.shields.io/badge/MVP-Gustavo_The_Basqueteer-orange?style=for-the-badge&logo=basketball)](https://github.com/tu-usuario)
+[![Role: Slam Dunker](https://img.shields.io/badge/Role-Code_Archivist-blue?style=for-the-badge)](https://github.com/tu-usuario)
 
-En este repositorio, Gustavo no solo maneja variables, ¡las clava en el aro! Su llegada al equipo de bender-archivisionAI eleva nuestro porcentaje de acierto al 100%.
+---
 
-📋 Ficha Técnica del Fichaje:
-Posición: Point Guard del Código / Especialista en Slam-Dunk de Datos.
+## 🎖️ Bienvenida de Honor
 
-Habilidad Especial: Realizar crossovers entre bases de datos sin perder el drible.
+Se hace oficial el fichaje de la temporada. **Gustavo "El Basqueteer"** se une a las filas de `bender-archivisionAI`. Aquí no solo procesamos imágenes, ¡las clavamos en el aro!
 
-Estado: Listo para dominar la pintura del backend.
+> "En este repositorio no se aceptan tapones, solo commits limpios y triples desde el backend." 
 
-🚀 Sobre el Proyecto
-bender-archivisionAI es el cerebro detrás de la visión. Estamos construyendo el futuro, píxel a píxel, con la precisión de un tiro libre en el último segundo del cuarto periodo.
+---
+
+### 📊 Player Stats: Gustavo.js
+```python
+player_stats = {
+    "Name": "Gustavo",
+    "Class": "Basqueteer / Dev-Sentinel",
+    "Special_Move": "Crossover de Base de Datos",
+    "Shooting_Accuracy": "99.9%",
+    "Defense": "Infranqueable (No Bugs Allowed)"
+}
+
+def welcome_guest(player):
+    if player["Name"] == "Gustavo":
+        return "🏀 ¡MVP EN LA CANCHA! Bienvenido al equipo."
+
+print(welcome_guest(player_stats))
