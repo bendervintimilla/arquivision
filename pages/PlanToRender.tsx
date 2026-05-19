@@ -5,6 +5,7 @@ import { MaskEditor } from '../components/MaskEditor';
 import { DesignStep, AppState, FloorPlan, RenderAsset } from '../types';
 import { analyzePlanImage, auditArchitecture, generateArchitecturalVariations, modifyPlanVector } from '../services/geminiService';
 import { applyPlanOperations, exportPlanToDxf, renderPlanToCanvas, drawVectorPlan, getPlanBounds } from '../services/cadService';
+import { planToEdgeMap } from '../services/planEdgeService';
 
 // --- VECTOR CAD VIEWER ---
 interface PanZoomViewerProps {
@@ -306,7 +307,23 @@ export const PlanToRender: React.FC<PlanToRenderProps> = ({ onAssetCreated }) =>
       }
     } else {
       // RENDER MODE (Image Generation)
-      let finalPrompt = `[ARCHITECTURAL PLAN → 3D RENDER] Create a photorealistic 3D render from this floor plan. Requirements: ${currentPrompt}. Maintain exact room proportions from the plan. Perspective view with natural lighting.${auditText ? ` Plan context: ${auditText}` : ''}`;
+      // Phase 3.1: pseudo-ControlNet — extract a clean edge stencil from
+      // the plan and ship it as a second image. The PLAN system instruction
+      // tells the model to treat the stencil as the EXACT wall geometry
+      // to preserve. Approximates Flux + Canny ControlNet without needing
+      // a BFL API key.
+      let edgeMap: string | null = null;
+      try {
+        edgeMap = await planToEdgeMap(activeImage!, { threshold: 160, dilate: 1, maxSize: 2048 });
+      } catch (e) {
+        console.warn('[plan→render] edge extraction failed, proceeding without:', e);
+      }
+
+      let finalPrompt = `[ARCHITECTURAL PLAN → 3D RENDER] Create a photorealistic 3D render from this floor plan.
+Requirements: ${currentPrompt}.
+${edgeMap ? 'A second image (edge stencil) is provided — every black line is a WALL EDGE you must preserve in the render at the same position and proportion. Do NOT add or remove walls.' : ''}
+Maintain EXACT room proportions, count, and connectivity from the plan.
+Perspective view with natural lighting.${auditText ? ` Plan context: ${auditText}` : ''}`;
 
       const userStep: DesignStep = {
         id: `u-${Date.now()}`,
@@ -324,7 +341,12 @@ export const PlanToRender: React.FC<PlanToRenderProps> = ({ onAssetCreated }) =>
           undefined,
           undefined,
           undefined,
-          'PLAN'
+          'PLAN',
+          undefined,
+          edgeMap,   // pseudo-ControlNet: edge stencil as the "reference image"
+          2,         // tier 2 (HD) by default for plan renders
+          undefined, // no additional views from user
+          undefined, // no edit history (PlanToRender has its own history)
         );
 
         const modelStep: DesignStep = {
