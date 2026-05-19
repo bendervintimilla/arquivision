@@ -250,13 +250,22 @@ export const generateArchitecturalVariations = async (
   pageRole: PageRole = 'PHOTO',
   editPreferences?: { preserveLayout: boolean; preserveLighting: boolean; preservePerspective: boolean },
   referenceImage?: string | null,
-  qualityTier: number = 2  // 0=Draft, 1=Standard, 2=HD, 3=Ultra
+  qualityTier: number = 2,  // 0=Draft, 1=Standard, 2=HD, 3=Ultra
+  additionalViews?: string[]  // Phase 6: extra views of same space (max 3)
 ): Promise<{ images: string[]; sceneAnalysis: SceneAnalysis | null; intent: EditIntent | null; promptSent: string; suggestMask?: boolean; meta?: GenerationMeta }> => {
 
   // --- NORMALIZE ALL IMAGES: convert blob: URLs to data:base64 ---
   let normalizedImg = await ensureBase64(img);
   let normalizedMask = await ensureBase64(mask);
   let normalizedRef = await ensureBase64(referenceImage);
+  // Phase 6: normalize additional views (max 3, drop any that fail to convert)
+  const normalizedExtraViews: string[] = [];
+  if (additionalViews && additionalViews.length) {
+    for (const v of additionalViews.slice(0, 3)) {
+      const nv = await ensureBase64(v);
+      if (nv) normalizedExtraViews.push(nv);
+    }
+  }
 
   // --- TIER-AWARE INPUT QUALITY: compress/scale context image based on quality tier ---
   // Higher tiers get higher-resolution input for better model output
@@ -336,6 +345,7 @@ export const generateArchitecturalVariations = async (
     referenceImage: normalizedRef || undefined,
     referenceImageMime: 'image/png',
     qualityTier,
+    additionalViews: normalizedExtraViews.length ? normalizedExtraViews : undefined,
   });
 
   if (!images || images.length === 0) throw new Error("No image generated");

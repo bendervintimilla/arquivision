@@ -63,6 +63,9 @@ export const backendApi = {
     qualityTier?: number;       // 0=Draft, 1=Standard, 2=HD, 3=Ultra
     useFastModel?: boolean;     // legacy — maps to tier 0
     dryRun?: boolean;           // when true, returns prompt+meta without calling the model
+    // Phase 6: extra views of the same space from different angles.
+    // Resolves rotation/hidden-side requests structurally. Max 3.
+    additionalViews?: string[];
   }) => apiCall<{ images: string[]; meta?: GenerationMeta }>('/api/generate-image', data),
 
 

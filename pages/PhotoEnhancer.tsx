@@ -33,6 +33,10 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
   const [pendingMask, setPendingMask] = useState<string | null>(null);
   const [referenceImage, setReferenceImage] = useState<string | null>(null);
   const referenceInputRef = useRef<HTMLInputElement>(null);
+  // Phase 6: up to 3 extra views of the SAME space from different angles.
+  // Lets gpt-image-2 resolve rotation / hidden-side requests structurally.
+  const [additionalViews, setAdditionalViews] = useState<string[]>([]);
+  const additionalViewInputRef = useRef<HTMLInputElement>(null);
   const [maskSuggestion, setMaskSuggestion] = useState<string | null>(null);
   const [enhancingIdx, setEnhancingIdx] = useState<number | null>(null);
   // Surfaced when the backend silently fell back from OpenAI/Pro to a lower
@@ -158,8 +162,10 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
     setContextConfigured(false);
     setGenerationPhase('');
     setReferenceImage(null);
+    setAdditionalViews([]);
     setMaskSuggestion(null);
     setEnhancingIdx(null);
+    setSpatialModal(null);
     clearSceneCache();
   };
 
@@ -176,6 +182,29 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
     }
 
     e.target.value = ''; // reset so same file can be re-selected
+  };
+
+  // Phase 6: handle additional view upload (max 3 total)
+  const handleAdditionalViewSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (additionalViews.length >= 3) {
+      setMaskSuggestion('⚠️ Máximo 3 vistas adicionales');
+      setTimeout(() => setMaskSuggestion(null), 4000);
+      e.target.value = '';
+      return;
+    }
+    try {
+      const compressed = await compressImage(file, 2048, 2048, 0.8);
+      setAdditionalViews(prev => [...prev, compressed]);
+    } catch (err) {
+      console.error('Failed to parse additional view:', err);
+    }
+    e.target.value = '';
+  };
+
+  const removeAdditionalView = (idx: number) => {
+    setAdditionalViews(prev => prev.filter((_, i) => i !== idx));
   };
 
   const handleImageSelected = (base64: string) => {
@@ -315,6 +344,7 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
         editPreferences,
         referenceImage,
         qualityTier,
+        additionalViews,  // Phase 6
       );
 
       stopProgressTimer();
@@ -675,8 +705,8 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
                   <div className="space-y-2 pt-2 border-t border-slate-800 text-xs text-slate-400">
                     <p className="font-bold uppercase tracking-wider text-slate-500">Alternativas con mejor probabilidad de éxito:</p>
                     <ul className="space-y-1 list-disc list-inside">
+                      <li><span className="text-sky-400 font-bold">⊞ Sube vistas adicionales</span> del mismo espacio desde otro ángulo (botón cuadrícula 2×2 abajo)</li>
                       <li>Pide regenerar la habitación completa con el nuevo layout</li>
-                      <li>Sube una foto de referencia desde el ángulo deseado</li>
                       <li>Usa Plan Studio (modo vector) para mover muebles por coordenada</li>
                     </ul>
                   </div>
@@ -700,19 +730,37 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
 
             {/* STICKY BOTTOM INPUT */}
             <div className="fixed bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-slate-950 via-slate-950 to-transparent z-40">
-              {/* Reference Image Preview */}
-              {referenceImage && (
-                <div className="max-w-4xl mx-auto mb-2 flex items-center gap-2">
-                  <div className="relative group">
-                    <img src={referenceImage} alt="Reference" className="h-16 w-16 object-cover rounded-xl border-2 border-purple-500/50" />
-                    <button
-                      onClick={() => setReferenceImage(null)}
-                      className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      ×
-                    </button>
-                  </div>
-                  <span className="text-xs text-purple-400 font-medium">Reference image attached</span>
+              {/* Reference Image + Additional Views Preview */}
+              {(referenceImage || additionalViews.length > 0) && (
+                <div className="max-w-4xl mx-auto mb-2 flex items-center gap-3 flex-wrap">
+                  {referenceImage && (
+                    <div className="flex items-center gap-2">
+                      <div className="relative group">
+                        <img src={referenceImage} alt="Reference" className="h-16 w-16 object-cover rounded-xl border-2 border-purple-500/50" />
+                        <button
+                          onClick={() => setReferenceImage(null)}
+                          className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          ×
+                        </button>
+                      </div>
+                      <span className="text-[10px] text-purple-400 font-medium uppercase tracking-wider">Referencia</span>
+                    </div>
+                  )}
+                  {additionalViews.map((v, idx) => (
+                    <div key={idx} className="flex items-center gap-2">
+                      <div className="relative group">
+                        <img src={v} alt={`View ${idx + 1}`} className="h-16 w-16 object-cover rounded-xl border-2 border-sky-500/50" />
+                        <button
+                          onClick={() => removeAdditionalView(idx)}
+                          className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          ×
+                        </button>
+                      </div>
+                      <span className="text-[10px] text-sky-400 font-medium uppercase tracking-wider">Vista {idx + 1}</span>
+                    </div>
+                  ))}
                 </div>
               )}
               <div className="max-w-4xl mx-auto bg-slate-900 border border-slate-700 rounded-2xl p-2 shadow-2xl flex items-center gap-2">
@@ -724,7 +772,7 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5"><path d="m2.695 14.762-1.262 3.155a.5.5 0 0 0 .65.65l3.155-1.262a4 4 0 0 0 1.343-.886L17.5 5.501a2.121 2.121 0 0 0-3-3L3.58 13.419a4 4 0 0 0-.885 1.343Z" /></svg>
                 </button>
-                {/* Reference Image Button */}
+                {/* Reference Image Button (style/material reference) */}
                 <input
                   ref={referenceInputRef}
                   type="file"
@@ -735,11 +783,35 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
                 <button
                   onClick={() => referenceInputRef.current?.click()}
                   className={`p-3 rounded-xl transition-all ${referenceImage ? 'text-purple-400 bg-purple-500/10' : 'text-slate-500 hover:text-white hover:bg-slate-800'}`}
-                  title="Attach reference image"
+                  title="Imagen de referencia (estilo/material)"
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
                     <path fillRule="evenodd" d="M1 5.25A2.25 2.25 0 0 1 3.25 3h13.5A2.25 2.25 0 0 1 19 5.25v9.5A2.25 2.25 0 0 1 16.75 17H3.25A2.25 2.25 0 0 1 1 14.75v-9.5Zm1.5 5.81v3.69c0 .414.336.75.75.75h13.5a.75.75 0 0 0 .75-.75v-2.69l-2.22-2.219a.75.75 0 0 0-1.06 0l-1.91 1.909-3.22-3.22a.75.75 0 0 0-1.06 0L2.5 11.06Zm12.5-4.31a1.25 1.25 0 1 1-2.5 0 1.25 1.25 0 0 1 2.5 0Z" clipRule="evenodd" />
                   </svg>
+                </button>
+                {/* Additional View Button — Phase 6 (multi-view input) */}
+                <input
+                  ref={additionalViewInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleAdditionalViewSelected}
+                  className="hidden"
+                />
+                <button
+                  onClick={() => additionalViewInputRef.current?.click()}
+                  disabled={additionalViews.length >= 3}
+                  className={`p-3 rounded-xl transition-all relative ${additionalViews.length > 0 ? 'text-sky-400 bg-sky-500/10' : 'text-slate-500 hover:text-white hover:bg-slate-800'} disabled:opacity-30 disabled:cursor-not-allowed`}
+                  title={`Vista adicional del mismo espacio desde otro ángulo (${additionalViews.length}/3) — resuelve rotaciones`}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-5 h-5">
+                    <rect x="3" y="3" width="7" height="7" rx="1" />
+                    <rect x="14" y="3" width="7" height="7" rx="1" />
+                    <rect x="3" y="14" width="7" height="7" rx="1" />
+                    <rect x="14" y="14" width="7" height="7" rx="1" />
+                  </svg>
+                  {additionalViews.length > 0 && (
+                    <span className="absolute -top-1 -right-1 w-4 h-4 bg-sky-500 text-white text-[9px] rounded-full flex items-center justify-center font-bold">{additionalViews.length}</span>
+                  )}
                 </button>
                 <textarea
                   value={currentPrompt}

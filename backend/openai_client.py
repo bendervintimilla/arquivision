@@ -104,6 +104,7 @@ def openai_edit(
     image_b64: str,
     mask_b64: Optional[str] = None,
     reference_b64: Optional[str] = None,
+    additional_views: Optional[List[str]] = None,
     n: int = 1,
     size: Optional[str] = None,
     quality: str = "medium",
@@ -112,7 +113,14 @@ def openai_edit(
     "high" can be over-creative and invent architectural elements that don't
     exist in the source. For fidelity-critical architectural edits, "medium"
     preserves the source much better. Use "high" only when the user has
-    explicitly opted into Ultra tier."""
+    explicitly opted into Ultra tier.
+
+    additional_views: optional list of base64 images (data URLs or raw b64) of
+    the SAME space from different angles. gpt-image-2 accepts a list of
+    images as input and uses them to inform the edit. This is the structural
+    solution for 3D rotation / 'show me the other side' requests — with
+    multiple views the model can reconstruct hidden faces of furniture and
+    rooms. Cap at 3 extra views (4 inputs total) for cost/latency."""
     """
     Image-to-image edit. Returns N PNG byte payloads.
 
@@ -130,17 +138,19 @@ def openai_edit(
 
     mask_bytes = _b64_to_bytes(mask_b64)
     ref_bytes  = _b64_to_bytes(reference_b64)
+    extra_views_bytes = [_b64_to_bytes(v) for v in (additional_views or []) if v]
+    extra_views_bytes = [b for b in extra_views_bytes if b][:3]  # hard cap
 
     # gpt-image-2 image edit endpoint accepts either a single image or a
-    # list of images. A second image is treated as additional reference.
-    images_arg: object
+    # list of images. Order matters: PRIMARY source first, then style
+    # reference (if any), then additional views of the same space.
+    image_list: list = [("source.png", image_bytes, "image/png")]
     if ref_bytes:
-        images_arg = [
-            ("source.png", image_bytes, "image/png"),
-            ("reference.png", ref_bytes, "image/png"),
-        ]
-    else:
-        images_arg = ("source.png", image_bytes, "image/png")
+        image_list.append(("reference.png", ref_bytes, "image/png"))
+    for i, vb in enumerate(extra_views_bytes):
+        image_list.append((f"view_{i+1}.png", vb, "image/png"))
+
+    images_arg: object = image_list if len(image_list) > 1 else image_list[0]
 
     kwargs = {
         "model": model,

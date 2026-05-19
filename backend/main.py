@@ -446,6 +446,12 @@ def generate_image():
         mask_base64 = data.get("mask")
         reference_base64 = data.get("referenceImage")
         reference_mime = data.get("referenceImageMime", "image/png")
+        # Phase 6: optional list of additional view images (same space, different
+        # angles). Used to resolve 3D rotation / hidden-side requests.
+        additional_views = data.get("additionalViews") or []
+        if not isinstance(additional_views, list):
+            additional_views = []
+        additional_views = additional_views[:3]  # cap for cost/latency
 
         # Quality tier: 0=Draft(flash), 1=Standard(1K), 2=HD(2K), 3=Ultra(4K)
         # Also accept legacy useFastModel=true → tier 0
@@ -555,12 +561,28 @@ def generate_image():
                 #   3 (Ultra): "high" — premium hero shot, accepts more creative liberty.
                 quality_knob = "high" if quality_tier >= 3 else "medium"
 
+                # If additional views are provided, prepend a structured
+                # instruction so the model understands their role.
+                if additional_views and image_base64:
+                    view_block = (
+                        f"\n\n📷 MULTI-VIEW INPUT ({len(additional_views) + 1} images total):\n"
+                        "  IMAGE 1: the primary source you must edit.\n"
+                        + ("  IMAGE 2: style/material reference (extract aesthetics from here).\n" if reference_base64 else "")
+                        + "\n".join([
+                            f"  IMAGE {i + 2 + (1 if reference_base64 else 0)}: additional view of the SAME space from a different angle. Use it to understand the geometry, furniture orientation, and hidden surfaces."
+                            for i in range(len(additional_views))
+                        ])
+                        + "\n\nUse all views together to produce a coherent edit. The edit should be consistent with what is visible in ALL views.\n"
+                    )
+                    openai_prompt = view_block + "\n\n" + openai_prompt
+
                 if image_base64:
                     openai_pngs = openai_edit(
                         prompt=openai_prompt,
                         image_b64=image_base64,
                         mask_b64=mask_base64,
                         reference_b64=reference_base64,
+                        additional_views=additional_views,
                         n=tier_cfg.get("n", 1),
                         size=image_size,
                         quality=quality_knob,
