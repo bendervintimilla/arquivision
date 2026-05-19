@@ -66,6 +66,10 @@ export const backendApi = {
     // Phase 6: extra views of the same space from different angles.
     // Resolves rotation/hidden-side requests structurally. Max 3.
     additionalViews?: string[];
+    // Phase 2: ordered list of previous user commands in this session.
+    // Backend prepends them as cumulative context to keep iterations
+    // consistent with the original design intent.
+    editHistory?: string[];
   }) => apiCall<{ images: string[]; meta?: GenerationMeta }>('/api/generate-image', data),
 
 

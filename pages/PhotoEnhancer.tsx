@@ -333,6 +333,14 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
         startProgressTimer(qualityTier);
       }
 
+      // Phase 2: collect previous user commands from this session for
+      // cumulative-context anchoring. Only "user" role steps with text.
+      // Skip the current one (it's added to the steps right before this).
+      const editHistory = designSteps
+        .filter(s => s.role === 'user' && s.text && s.text !== promptToUse && s.text !== 'Original Upload')
+        .map(s => s.text!)
+        .slice(-10);
+
       const result = await generateArchitecturalVariations(
         contextImage || null,
         'image/png',
@@ -345,6 +353,7 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
         referenceImage,
         qualityTier,
         additionalViews,  // Phase 6
+        editHistory,      // Phase 2
       );
 
       stopProgressTimer();

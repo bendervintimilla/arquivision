@@ -453,6 +453,25 @@ def generate_image():
             additional_views = []
         additional_views = additional_views[:3]  # cap for cost/latency
 
+        # Phase 2: ordered list of previous user commands in this session.
+        # Anchored to the original upload — keeps iterations consistent
+        # with the original design intent, not just the latest output.
+        edit_history = data.get("editHistory") or []
+        if not isinstance(edit_history, list):
+            edit_history = []
+        edit_history = [str(e) for e in edit_history if e][-10:]  # last 10 only
+        if edit_history:
+            history_block = (
+                "\n\n📜 EDIT LINEAGE (iteration " + str(len(edit_history) + 1) + " of an ongoing design):\n"
+                + "Previous edits applied to this image, in order:\n"
+                + "\n".join([f"  {i+1}. {cmd[:200]}" for i, cmd in enumerate(edit_history)])
+                + "\n\nThe NEW instruction below is applied ON TOP of this lineage. "
+                + "Honor the cumulative state — every prior edit must remain in effect "
+                + "unless the new instruction explicitly overrides it.\n"
+            )
+            # Prepend the lineage to the prompt so the model sees it before the instruction
+            prompt = history_block + "\n" + prompt
+
         # Quality tier: 0=Draft(flash), 1=Standard(1K), 2=HD(2K), 3=Ultra(4K)
         # Also accept legacy useFastModel=true → tier 0
         quality_tier = int(data.get("qualityTier", 2))

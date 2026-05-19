@@ -251,7 +251,8 @@ export const generateArchitecturalVariations = async (
   editPreferences?: { preserveLayout: boolean; preserveLighting: boolean; preservePerspective: boolean },
   referenceImage?: string | null,
   qualityTier: number = 2,  // 0=Draft, 1=Standard, 2=HD, 3=Ultra
-  additionalViews?: string[]  // Phase 6: extra views of same space (max 3)
+  additionalViews?: string[],  // Phase 6: extra views of same space (max 3)
+  editHistory?: string[]       // Phase 2: cumulative previous commands
 ): Promise<{ images: string[]; sceneAnalysis: SceneAnalysis | null; intent: EditIntent | null; promptSent: string; suggestMask?: boolean; meta?: GenerationMeta }> => {
 
   // --- NORMALIZE ALL IMAGES: convert blob: URLs to data:base64 ---
@@ -346,6 +347,7 @@ export const generateArchitecturalVariations = async (
     referenceImageMime: 'image/png',
     qualityTier,
     additionalViews: normalizedExtraViews.length ? normalizedExtraViews : undefined,
+    editHistory: editHistory && editHistory.length ? editHistory : undefined,
   });
 
   if (!images || images.length === 0) throw new Error("No image generated");
