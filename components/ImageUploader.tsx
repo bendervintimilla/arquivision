@@ -1,6 +1,6 @@
 
 import React, { useState, useRef } from "react";
-import { processPdf, processDxf } from "../services/fileService";
+import { processPdf, processDxf, compressImage } from "../services/fileService";
 
 interface ImageUploaderProps {
   onImageSelected: (base64: string, mimeType: string, meta?: any) => void;
@@ -18,7 +18,7 @@ export const ImageUploader: React.FC<ImageUploaderProps> = ({
   const handleFile = async (file: File) => {
     if (!file) return;
     const ext = file.name.split('.').pop()?.toLowerCase();
-    
+
     setStatus('PROCESSING');
     try {
       if (ext === 'pdf') {
@@ -27,18 +27,17 @@ export const ImageUploader: React.FC<ImageUploaderProps> = ({
       } else if (ext === 'dxf' || ext === 'dwg') {
         // Process both DWG and DXF via our service (which handles binary fallback)
         const result = await processDxf(file);
-        onImageSelected(result.image, "image/png", { 
-            format: ext.toUpperCase() + ' Drawing', 
-            manifest: result.manifest, 
-            name: file.name,
-            isPlaceholder: result.image.includes('BINARY_DWG_MODE') // Flag for UI to auto-trigger AI
+        onImageSelected(result.image, "image/png", {
+          format: ext.toUpperCase() + ' Drawing',
+          manifest: result.manifest,
+          name: file.name,
+          isPlaceholder: result.image.includes('BINARY_DWG_MODE') // Flag for UI to auto-trigger AI
         });
       } else if (['png', 'jpg', 'jpeg', 'webp'].includes(ext || '')) {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          onImageSelected(e.target?.result as string, file.type, { format: 'Raster Image', name: file.name });
-        };
-        reader.readAsDataURL(file);
+        // Compress image before generating base64 to avoid memory/network payload crashes 
+        // 2048px max dimension and 0.8 quality matches Gemini's recommended input size
+        const compressedBase64 = await compressImage(file, 2048, 2048, 0.8);
+        onImageSelected(compressedBase64, 'image/jpeg', { format: 'Raster Image', name: file.name });
       } else {
         alert("File format not supported. Please use .dwg, .dxf, .pdf, or images.");
       }

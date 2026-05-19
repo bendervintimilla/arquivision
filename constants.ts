@@ -1,14 +1,14 @@
 import { DesignPreset } from './types';
 
-// Gemini 3 Pro Image — Professional quality, 4K, thinking (primary model)
-export const MODEL_NAME = 'gemini-3-pro-image-preview';
-export const PRO_MODEL_NAME = 'gemini-3-pro-image-preview';
-
-// Gemini 2.5 Flash Image — Fast, efficient, 1024px (speed mode)
-export const FAST_IMAGE_MODEL_NAME = 'gemini-2.5-flash-image';
-
-// Fast model for text analysis (intent classification, scene analysis)
-export const FAST_MODEL_NAME = 'gemini-2.5-flash';
+// Model IDs are owned by services/modelConfig.ts — re-exported here for
+// backwards compatibility. Do NOT add new model strings to this file;
+// edit services/modelConfig.ts instead.
+export {
+  MODEL_NAME,
+  PRO_MODEL_NAME,
+  FAST_IMAGE_MODEL_NAME,
+  FAST_MODEL_NAME,
+} from './services/modelConfig';
 
 export const DESIGN_PRESETS: DesignPreset[] = [
   {

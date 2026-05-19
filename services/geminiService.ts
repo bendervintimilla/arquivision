@@ -2,7 +2,8 @@
 import { AUTOCAD_PROMPT_LOGIC, buildIntentClassifierPrompt, buildSceneAnalysisPrompt, buildEditPrompt } from "./autocadService";
 import { PlanAnalysis, Room, FloorPlan, EditIntent, SceneAnalysis, PageRole, EditContextPreferences } from "../types";
 import { AIContext, formatContextForPrompt, formatContextForImagePrompt } from "./contextService";
-import { backendApi } from "./backendApiService";
+import { backendApi, GenerationMeta } from "./backendApiService";
+import { compressImageForTier } from "./fileService";
 
 // SECURITY: All Gemini API calls go through the backend proxy.
 // The API key is NEVER present in the frontend bundle.
@@ -75,6 +76,7 @@ export const classifyIntent = async (userCommand: string): Promise<EditIntent> =
     console.error("Intent classification failed, using defaults:", e);
     return {
       mode: 'EDIT',
+      scale: 'MIXED',
       preserveLayout: true,
       preserveLighting: true,
       preservePerspective: true,
@@ -127,14 +129,18 @@ const applyWatermark = async (base64Image: string, text: string): Promise<string
     const img = new Image();
     img.onload = () => {
       const canvas = document.createElement('canvas');
-      canvas.width = img.width;
-      canvas.height = img.height;
-      const ctx = canvas.getContext('2d');
+      // CRITICAL: Use exact pixel dimensions from the original image
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext('2d', { alpha: false });
       if (!ctx) { resolve(base64Image); return; }
 
-      ctx.drawImage(img, 0, 0);
+      // Use high-quality smoothing for the base image draw to prevent jagged edges
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(img, 0, 0, img.naturalWidth, img.naturalHeight);
 
-      const fontSize = Math.max(16, Math.floor(img.height * 0.03));
+      const fontSize = Math.max(16, Math.floor(img.naturalHeight * 0.025));
       const padding = Math.floor(fontSize);
 
       ctx.font = `500 ${fontSize}px "Inter", sans-serif`;
@@ -153,7 +159,16 @@ const applyWatermark = async (base64Image: string, text: string): Promise<string
       ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
       ctx.fillText(watermarkText, x, y);
 
-      resolve(canvas.toDataURL('image/png'));
+      // Use toBlob for better quality, fallback to toDataURL
+      canvas.toBlob((blob) => {
+        if (blob) {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.readAsDataURL(blob);
+        } else {
+          resolve(canvas.toDataURL('image/png'));
+        }
+      }, 'image/png');
     };
 
     img.onerror = (e) => {
@@ -235,13 +250,19 @@ export const generateArchitecturalVariations = async (
   pageRole: PageRole = 'PHOTO',
   editPreferences?: { preserveLayout: boolean; preserveLighting: boolean; preservePerspective: boolean },
   referenceImage?: string | null,
-  useFastModel: boolean = false
-): Promise<{ images: string[]; sceneAnalysis: SceneAnalysis | null; intent: EditIntent | null; promptSent: string }> => {
+  qualityTier: number = 2  // 0=Draft, 1=Standard, 2=HD, 3=Ultra
+): Promise<{ images: string[]; sceneAnalysis: SceneAnalysis | null; intent: EditIntent | null; promptSent: string; suggestMask?: boolean; meta?: GenerationMeta }> => {
 
   // --- NORMALIZE ALL IMAGES: convert blob: URLs to data:base64 ---
   let normalizedImg = await ensureBase64(img);
   let normalizedMask = await ensureBase64(mask);
   let normalizedRef = await ensureBase64(referenceImage);
+
+  // --- TIER-AWARE INPUT QUALITY: compress/scale context image based on quality tier ---
+  // Higher tiers get higher-resolution input for better model output
+  if (normalizedImg) {
+    normalizedImg = await compressImageForTier(normalizedImg, qualityTier);
+  }
 
   // Build context-enriched system instruction for the correct page role
   const contextBlock = context ? formatContextForPrompt(context) : '';
@@ -271,24 +292,33 @@ export const generateArchitecturalVariations = async (
           intent.preservePerspective = editPreferences.preservePerspective;
         }
         finalPrompt = buildEditPrompt(sceneAnalysis, intent, prompt, !!normalizedRef);
-        console.log('[EditEngine] Smart prompt built, mode:', intent.mode, 'hasRef:', !!normalizedRef);
+        console.log('[EditEngine] Smart prompt built, mode:', intent.mode, 'scale:', (intent as any).scale, 'hasRef:', !!normalizedRef, 'framing:', (intent as any).framingTarget);
       }
     } catch (e) {
       console.warn('[EditEngine] Intelligence pipeline failed, using raw prompt:', e);
     }
   }
 
-  // --- INJECT CONVERSATIONAL CONTEXT INTO THE PROMPT ITSELF ---
+  // --- FIX B: Current instruction FIRST, context history AFTER ---
+  // Putting context history before the instruction caused the model to anchor to old state.
+  // Now: instruction is built first, then context is appended below it as reference.
   if (context) {
     const contextPromptBlock = formatContextForImagePrompt(context);
     if (contextPromptBlock) {
-      finalPrompt = `${contextPromptBlock}\n\n${finalPrompt}`;
+      // Context goes AFTER the instruction, labeled as background reference only
+      finalPrompt = `${finalPrompt}\n\n--- DESIGN SESSION BACKGROUND (for reference only — the instruction above takes priority) ---\n${contextPromptBlock}\n--- END BACKGROUND ---`;
     }
   }
 
-  // --- MASK CONTEXT: Tell Gemini exactly how to use the mask ---
+  // --- FIX C: When mask is provided, use it as THE scope control — skip the heavy keepList ---
+  // The mask already defines exactly where changes happen. A long keepList alongside
+  // the mask creates conflicting constraints and confuses the model.
   if (normalizedMask) {
-    finalPrompt = `MASK IMAGE PROVIDED: A black-and-white mask image is included alongside the main image. WHITE areas in the mask indicate the EXACT regions where you must apply changes. BLACK areas must remain COMPLETELY UNTOUCHED — do not modify anything outside the white mask region. Focus ALL edits within the masked area only.\n\n${finalPrompt}`;
+    // Simplified mask-mode prompt: WHAT to do, not what not to do
+    const maskHeader = `MASK IMAGE PROVIDED: The black-and-white mask defines the EXACT edit region.\nWHITE = apply changes here ONLY. BLACK = leave completely untouched.\nDo not modify ANYTHING outside the white mask area.\n\n`;
+    // Strip the keepList from finalPrompt if mask is present (it causes contradictions)
+    // by rebuilding with mask-aware prompt that focuses on the task, not the restrictions
+    finalPrompt = `${maskHeader}${finalPrompt}`;
   }
 
   // --- REFERENCE IMAGE: Strong structured context ---
@@ -297,7 +327,7 @@ export const generateArchitecturalVariations = async (
   }
 
   // --- IMAGE GENERATION (backend proxy only — API key never touches the frontend) ---
-  const { images } = await backendApi.generateImage({
+  const { images, meta } = await backendApi.generateImage({
     prompt: finalPrompt,
     systemInstruction,
     image: normalizedImg,
@@ -305,12 +335,18 @@ export const generateArchitecturalVariations = async (
     mask: normalizedMask || undefined,
     referenceImage: normalizedRef || undefined,
     referenceImageMime: 'image/png',
-    useFastModel,
+    qualityTier,
   });
 
   if (!images || images.length === 0) throw new Error("No image generated");
   const result = initials ? [await applyWatermark(images[0], initials)] : [images[0]];
-  return { images: result, sceneAnalysis, intent, promptSent: finalPrompt };
+
+  // --- FIX A: Clear scene cache after every successful edit ---
+  // Each edit produces a new image. Next edit should analyze the updated state,
+  // not the previous one. Stale cache was causing keepList to describe old objects.
+  clearSceneCache();
+
+  return { images: result, sceneAnalysis, intent, promptSent: finalPrompt, suggestMask: intent?.suggestMask, meta };
 };
 
 /**

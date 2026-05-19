@@ -109,10 +109,11 @@ export interface PlanImprovementStep {
 
 // --- Edit Intelligence Engine Types ---
 
-export type EditMode = 'EDIT' | 'GENERATE' | 'STYLE_TRANSFER' | 'REMOVE_OBJECTS';
+export type EditMode = 'EDIT' | 'GENERATE' | 'STYLE_TRANSFER' | 'REMOVE_OBJECTS' | 'PRECISION_EDIT';
 
 export interface EditIntent {
   mode: EditMode;
+  scale: 'MACRO' | 'DETAIL' | 'MIXED';
   preserveLayout: boolean;
   preserveLighting: boolean;
   preservePerspective: boolean;
@@ -120,6 +121,9 @@ export interface EditIntent {
   elementsToKeep: string[];
   targetStyle?: string;
   confidence: number;
+  suggestMask?: boolean;
+  framingTarget?: string | null;
+  framingElement?: string | null;
 }
 
 export interface SceneAnalysis {

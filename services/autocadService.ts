@@ -13,12 +13,29 @@ ROLE: You are the world's best architectural PHOTO EDITOR and DESIGNER, with dee
 YOUR #1 PRIORITY: Follow the user's instruction precisely and completely. If they ask for specific changes, make ALL of them — not just some.
 
 ARCHITECTURAL INTELLIGENCE:
-- You understand construction terminology: beams, joists, soffits, flush ceilings, recessed elements, structural members, etc.
+- You understand construction terminology in both English AND Spanish:
+  - cornisa/cornisas = cornice (decorative molding at ceiling-wall junction)
+  - moldura/molduras = molding/trim (decorative wall panel frames)
+  - cuarterón/cuarterones = panel (recessed wall sections framed by moldings)
+  - zócalo = baseboard/skirting
+  - hueco/vano = opening/span
+  - encimera = countertop
+  - faja perimetral = perimeter border trim on floor
+  - papel tapiz = wallpaper
+  - despiece = tile pattern/layout
+  - rosetón = ceiling rose/medallion (decorative centerpiece where chandelier hangs)
+  - vigas = beams
 - When users say "flush with" or "al raz de", it means the surface should be exactly level/aligned with the referenced element.
 - When users mention dimensions (diameter, size, height, width), apply those changes accurately and visibly.
 - When users reference specific building elements (light fixtures, switches, outlets, moldings), identify and modify ONLY those elements.
 - "Techo al raz de la viga" = ceiling surface aligned flush with the bottom of the beam, concealing/enclosing the beam.
 - "Focos de diámetro más pequeño" = replace existing light fixtures with visibly smaller ones, maintaining the same positions.
+
+FRAMING/SURROUNDING RULES (critical for moldings):
+- "Molduras que rodeen la TV" = wall moldings forming a rectangular FRAME AROUND the TV, never overlapping or going behind it. Think picture frame: 4 sides of molding with the TV centered inside.
+- "Molduras en los cuarterones" = moldings creating rectangular panel frames on wall surfaces.
+- "Que las molduras no pasen por detrás" = moldings must stop at the element's edges and frame around it.
+- When framing an element: the molding/trim creates a border that SURROUNDS the element with appropriate spacing, never crossing over it.
 
 EDITING RULES:
 1. When given an image + instruction: execute EVERY detail the user requested.
@@ -35,6 +52,20 @@ QUALITY STANDARDS:
 - Correct material physics (reflections, shadows, textures)
 - Consistent perspective throughout the image
 - Construction details must be physically plausible
+
+CRITICAL — WINDOW/EXTERIOR PHOTOREALISM:
+- Views through windows MUST look like PHOTOGRAPHS, not paintings or illustrations.
+- City skylines, landscapes, streets visible through glass must appear as high-resolution photographic backgrounds.
+- Glass must show realistic reflections, natural light transmission, and slight distortion.
+- NEVER render exterior views with painterly brushstrokes, watercolor effects, or illustrative styles. If it looks like art, it's wrong.
+- Dusk/golden hour exterior: realistic atmospheric haze, actual building geometry, photographic sky gradients.
+- The interior and exterior must both feel like a single, unified real-world photograph.
+
+DETAIL COMPLETENESS RULES:
+- If the user says "ALL sofas", "TODOS los sofas", "el resto de sofas" = change EVERY sofa in the entire image, not just one.
+- If the user says curtains/cortinas = change ALL curtains visible, not just some.
+- Count each instance of the element and change every single one.
+- A partial completion of a multi-element request is a FAILURE.
   `,
 
   PLAN: `
@@ -82,26 +113,48 @@ Classify this architectural editing command. Return ONLY valid JSON, no markdown
 
 USER COMMAND: "${userCommand}"
 
+ARCHITECTURAL VOCABULARY GUIDE (Spanish → English):
+- cornisa/cornisas = cornice/cornices (decorative molding at ceiling-wall junction)
+- moldura/molduras = molding/trim (decorative wall panel frames)
+- cuarterón/cuarterones = panel/panels (recessed wall sections between moldings)
+- zócalo = baseboard/skirting board
+- encimera = countertop
+- faja perimetral = perimeter border/trim band
+- al raz de = flush with
+- peninsula = kitchen peninsula/breakfast bar
+- focos = light fixtures/spotlights
+- papel tapiz = wallpaper
+- despiece = tile pattern/layout
+- rosetón = ceiling rose/medallion
+- rodear/enmarcar = to frame/surround an element
+
 Return this exact JSON structure:
 {
-  "mode": "EDIT" | "GENERATE" | "STYLE_TRANSFER" | "REMOVE_OBJECTS",
+  "mode": "EDIT" | "GENERATE" | "STYLE_TRANSFER" | "REMOVE_OBJECTS" | "PRECISION_EDIT",
+  "scale": "MACRO" | "DETAIL" | "MIXED",
   "preserveLayout": true/false,
   "preserveLighting": true/false,
   "preservePerspective": true/false,
-  "elementsToChange": ["list", "of", "elements"],
+  "elementsToChange": ["list", "of", "specific", "elements"],
   "elementsToKeep": ["list", "of", "elements"],
   "targetStyle": "style name or null",
-  "confidence": 0.0-1.0
+  "confidence": 0.0-1.0,
+  "suggestMask": true/false,
+  "framingTarget": "element being framed or null",
+  "framingElement": "element used to frame or null"
 }
 
 CLASSIFICATION RULES:
-- EDIT: User wants to modify specific elements (change color, swap furniture, etc.)
-- GENERATE: User wants a completely new image from text description
-- STYLE_TRANSFER: User wants to change the design style (modern, victorian, etc.)
-- REMOVE_OBJECTS: User wants to remove/delete specific things from the image
+- PRECISION_EDIT: Small, localized changes (<10% of image). Set suggestMask=true.
+- EDIT: Medium scope changes (floor, wall color, add furniture).
+- STYLE_TRANSFER: Change the whole design style.
+- REMOVE_OBJECTS: Delete specific things.
+- GENERATE: Create from scratch.
 
-For EDIT, STYLE_TRANSFER, REMOVE_OBJECTS: preserveLayout/Lighting/Perspective should be TRUE.
-For GENERATE: all preserve flags should be FALSE.
+FRAMING: If "rodear", "rodeen", "enmarcar" detected → set framingTarget and framingElement.
+
+For PRECISION_EDIT, EDIT, STYLE_TRANSFER, REMOVE_OBJECTS: preserve flags TRUE.
+For GENERATE: all FALSE.
 `;
 }
 
@@ -148,9 +201,15 @@ export function buildEditPrompt(
   userCommand: string,
   hasReferenceImage: boolean = false
 ): string {
+  // Build keepList — EXCLUDE elements that are explicitly being changed to avoid contradictions
+  const changeSetLower = intent.elementsToChange.map(e => e.toLowerCase());
+  const filteredObjects = sceneAnalysis.objects.filter(o => {
+    const oLower = o.toLowerCase();
+    return !changeSetLower.some(change => oLower.includes(change) || change.includes(oLower.split(' ')[0]));
+  });
   const keepList = intent.elementsToKeep.length > 0
     ? intent.elementsToKeep.join(', ')
-    : sceneAnalysis.objects.filter(o => !intent.elementsToChange.includes(o)).join(', ');
+    : filteredObjects.join(', ');
 
   const refBlock = hasReferenceImage ? `
 REFERENCE IMAGE PROVIDED: A second image has been included as visual reference.
@@ -205,6 +264,51 @@ FINAL REMINDER — Remove everything the user asked to remove: "${userCommand}"
   }
 
   // For EDIT mode — balance between following instructions and preserving context
+  // First check for framing/surrounding commands
+  const framingKeywords = ['rodear', 'rodeen', 'enmarcar', 'enmarquen', 'alrededor de', 'al rededor de', 'que no pasen por detrás', 'que no pasen por detras'];
+  const hasFramingIntent = framingKeywords.some(kw => userCommand.toLowerCase().includes(kw)) || (intent as any).framingTarget;
+  const framingTarget = (intent as any).framingTarget || '';
+  const framingElement = (intent as any).framingElement || 'molduras';
+
+  const framingBlock = hasFramingIntent ? `
+🖼️ FRAMING/SURROUNDING INSTRUCTION (CRITICAL):
+The user wants ${framingElement} to FRAME and SURROUND the ${framingTarget || 'specified element'}.
+This means:
+- The ${framingElement} must form a RECTANGLE or BORDER around the ${framingTarget || 'element'}
+- The ${framingElement} must NEVER overlap, cross over, or pass behind the ${framingTarget || 'element'}
+- The ${framingTarget || 'element'} sits INSIDE the frame created by the ${framingElement}
+- Think of it like a PICTURE FRAME: 4 sides of ${framingElement} with the ${framingTarget || 'element'} centered inside
+- The ${framingElement} should be aligned with the edges of the ${framingTarget || 'element'} with appropriate decorative spacing
+- On the wall surface, the ${framingElement} should create clean rectangular panels that STOP at the ${framingTarget || 'element'}'s boundaries
+` : '';
+
+  // Check for PRECISION_EDIT mode
+  if (intent.mode === 'PRECISION_EDIT' || (intent as any).scale === 'DETAIL') {
+    return `
+⚠️ PRECISION EDIT — SURGICAL CHANGE REQUIRED:
+"${userCommand}"
+
+This is a DETAIL-LEVEL edit. The change affects a TINY portion of the image.
+CRITICAL: 99% of the image must remain PIXEL-PERFECT IDENTICAL.
+${refBlock}
+${framingBlock}
+
+You MUST:
+1. Identify the EXACT element mentioned (use the vocabulary: cornisa=cornice, moldura=molding, cuarterón=panel, encimera=countertop, zócalo=baseboard, faja=border trim)
+2. Make ONLY the specific change requested to ONLY that element
+3. The change must be CLEARLY VISIBLE but ONLY on that element
+4. EVERYTHING else — walls, floor, furniture, lighting, perspective — remains absolutely UNTOUCHED
+
+${sceneAnalysis.objects.length > 0 ? `Visible elements: ${sceneAnalysis.objects.join(', ')}` : ''}
+- Camera: ${sceneAnalysis.cameraAngle} (LOCKED)
+- Lighting: ${sceneAnalysis.lighting} (LOCKED)
+
+Change target: ${intent.elementsToChange.join(', ')}
+
+FINAL CHECK: Only "${userCommand}" — nothing else changes.
+    `.trim();
+  }
+
   return `
 ⚠️ MANDATORY INSTRUCTION — READ EVERY WORD AND EXECUTE ALL OF IT:
 "${userCommand}"
@@ -213,6 +317,7 @@ This is the MOST IMPORTANT part. Execute EVERY detail of the user's request prec
 ${intent.elementsToChange.length > 0 ? `Elements to modify: ${intent.elementsToChange.join(', ')}` : ''}
 ${intent.targetStyle ? `Target style: ${intent.targetStyle}` : ''}
 ${refBlock}
+${framingBlock}
 
 🔒 STRICT SCOPE — CRITICAL RULE:
 - ONLY modify the elements EXPLICITLY mentioned in the user's instruction above.
@@ -230,6 +335,7 @@ ARCHITECTURAL INTERPRETATION GUIDE:
 - If the user mentions specific building components (beams, columns, moldings, fixtures): identify those EXACT elements in the image and modify ONLY them.
 - If the user mentions specific MATERIALS (marble, wood, stone): apply that exact material with correct texture, veining, and finish.
 - If the user gives MULTIPLE instructions: execute ALL of them, not just some.
+- If the user mentions "cornisa" = cornice (ceiling-wall junction molding), "moldura" = wall panel frame molding, "cuarterón" = recessed panel between moldings.
 - Physical changes must look structurally sound and architecturally plausible.
 
 CONTEXT (for reference — DO NOT let this cause unwanted changes):

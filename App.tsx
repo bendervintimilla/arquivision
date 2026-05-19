@@ -4,13 +4,15 @@ import { Header } from './components/Header';
 import { PhotoEnhancer } from './pages/PhotoEnhancer';
 import { PlanToRender } from './pages/PlanToRender';
 import { VideoStudio } from './pages/VideoStudio';
+import { AdminDashboard } from './pages/AdminDashboard';
 import { ConversationSidebar } from './components/ConversationSidebar';
 import { RenderAsset } from './types';
 import { useAuth } from './contexts/AuthContext';
 import { listConversations, DBConversation, loadGallery, DBAsset } from './services/conversationService';
 import { getSignedUrl } from './services/imageStorageService';
 
-type ActiveTab = 'PHOTO' | 'PLAN' | 'VIDEO';
+const OWNER_ID = 'b30e21bf-2aad-477f-93ef-8f6ec4b459c5';
+type ActiveTab = 'PHOTO' | 'PLAN' | 'VIDEO' | 'ADMIN';
 
 const App: React.FC = () => {
   const { user } = useAuth();
@@ -128,6 +130,18 @@ const App: React.FC = () => {
           >
             Video Studio <span className="ml-2 text-[10px] bg-purple-500/20 text-purple-400 px-1.5 py-0.5 rounded-full uppercase tracking-wide">New</span>
           </button>
+          {/* Admin tab — owner only */}
+          {user.id === OWNER_ID && (
+            <button
+              onClick={() => setActiveTab('ADMIN')}
+              className={`py-4 text-sm font-medium border-b-2 transition-all ml-auto ${activeTab === 'ADMIN'
+                ? 'border-amber-500 text-amber-400'
+                : 'border-transparent text-slate-500 hover:text-slate-200'
+                }`}
+            >
+              📊 Usage
+            </button>
+          )}
         </div>
       </div>
 
@@ -148,6 +162,11 @@ const App: React.FC = () => {
         <div className={`w-full h-full ${activeTab === 'VIDEO' ? 'block' : 'hidden'}`}>
           <VideoStudio gallery={gallery} />
         </div>
+        {activeTab === 'ADMIN' && (
+          <div className="w-full h-full">
+            <AdminDashboard userId={user.id} />
+          </div>
+        )}
       </div>
 
       {/* Conversation Sidebar */}

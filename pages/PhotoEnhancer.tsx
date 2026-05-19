@@ -7,6 +7,7 @@ import { AppState, DesignStep, RenderAsset, EditContextPreferences, EditMode } f
 import { generateArchitecturalVariations, clearSceneCache } from '../services/geminiService';
 import { backendApi } from '../services/backendApiService';
 import { forceDownloadImage } from '../services/downloadHelper';
+import { compressImage } from '../services/fileService';
 import { useConversation } from '../hooks/useConversation';
 
 interface PhotoEnhancerProps {
@@ -32,13 +33,24 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
   const [pendingMask, setPendingMask] = useState<string | null>(null);
   const [referenceImage, setReferenceImage] = useState<string | null>(null);
   const referenceInputRef = useRef<HTMLInputElement>(null);
+  const [maskSuggestion, setMaskSuggestion] = useState<string | null>(null);
+  const [enhancingIdx, setEnhancingIdx] = useState<number | null>(null);
+  // Surfaced when the backend silently fell back from OpenAI/Pro to a lower
+  // model. User selected and is paying for a higher tier than they actually
+  // got — they deserve to know.
+  const [downgradeWarning, setDowngradeWarning] = useState<string | null>(null);
+  // Surfaced when the user hit the daily $ cap and was forced to Tier 0.
+  const [capHitWarning, setCapHitWarning] = useState<string | null>(null);
+  // Holds the setInterval that cycles OpenAI progress phases. Cleared on
+  // result arrival, error, or component unmount.
+  const phaseTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // UI States
   const [isWorkspaceOpen, setIsWorkspaceOpen] = useState(true);
   const [showPresets, setShowPresets] = useState(true);
 
-  // Speed Mode: Draft (fast, lower quality) vs Final (slow, max quality)
-  const [useFastModel, setUseFastModel] = useState(false);
+  // Quality tier: 0=Draft (Flash), 1=Standard (Pro 1K), 2=HD (Pro 2K), 3=Ultra (Pro 4K)
+  const [qualityTier, setQualityTier] = useState<number>(2); // Default: HD
 
   // For Text-to-Image start
   const [startTextPrompt, setStartTextPrompt] = useState('');
@@ -95,6 +107,39 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
     }
   }, [designSteps, appState]);
 
+  // Ensure the phase-cycling timer never leaks across unmounts or re-renders.
+  useEffect(() => () => {
+    if (phaseTimerRef.current) {
+      clearInterval(phaseTimerRef.current);
+      phaseTimerRef.current = null;
+    }
+  }, []);
+
+  // Start the OpenAI-aware progress timer. Tier 0 (Gemini Flash) is fast
+  // enough that we don't need this — only kick it in for tiers 1+.
+  const startProgressTimer = (tier: number) => {
+    if (phaseTimerRef.current) clearInterval(phaseTimerRef.current);
+    if (tier === 0) return;
+    const startedAt = Date.now();
+    phaseTimerRef.current = setInterval(() => {
+      const elapsed = Math.round((Date.now() - startedAt) / 1000);
+      let msg = '';
+      if (elapsed < 8)        msg = `💭 Razonando antes de dibujar... (${elapsed}s)`;
+      else if (elapsed < 30)  msg = `🎨 Generando render... (${elapsed}s)`;
+      else if (elapsed < 70)  msg = `🎨 Generando render — esto puede tomar 1–2 min (${elapsed}s)`;
+      else if (elapsed < 110) msg = `✨ Finalizando detalles... (${elapsed}s)`;
+      else                    msg = `⏳ Casi listo, pulendo los últimos detalles... (${elapsed}s)`;
+      setGenerationPhase(msg);
+    }, 1000);
+  };
+
+  const stopProgressTimer = () => {
+    if (phaseTimerRef.current) {
+      clearInterval(phaseTimerRef.current);
+      phaseTimerRef.current = null;
+    }
+  };
+
   const handleReset = () => {
     setAppState(AppState.IDLE);
     resetConversation();
@@ -105,15 +150,23 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
     setContextConfigured(false);
     setGenerationPhase('');
     setReferenceImage(null);
+    setMaskSuggestion(null);
+    setEnhancingIdx(null);
     clearSceneCache();
   };
 
-  const handleReferenceImageSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleReferenceImageSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => setReferenceImage(reader.result as string);
-    reader.readAsDataURL(file);
+
+    try {
+      // Compress reference image to 2048px / 80% JPEG before attaching to payload
+      const compressedBase64 = await compressImage(file, 2048, 2048, 0.8);
+      setReferenceImage(compressedBase64);
+    } catch (err) {
+      console.error('Failed to parse reference image:', err);
+    }
+
     e.target.value = ''; // reset so same file can be re-selected
   };
 
@@ -179,7 +232,7 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
 
     setAppState(AppState.GENERATING);
     setErrorMsg(null);
-    setGenerationPhase('🧠 Classifying intent...');
+    setGenerationPhase('🧠 Clasificando intención...');
 
     if (!overridePrompt) {
       const userStep: DesignStep = {
@@ -198,10 +251,17 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
       const aiContext = await getAIContext();
 
       if (contextImage) {
-        setGenerationPhase('🔬 Analyzing scene...');
+        setGenerationPhase('🔬 Analizando escena...');
       }
 
-      setGenerationPhase('🎨 Generating image...');
+      // For Tier 0 (Gemini Flash, ~5-10s) a static phase is fine.
+      // For Tier 1+ (OpenAI gpt-image-2, ~90-120s) we cycle through phases
+      // so the user doesn't think the app froze during the reasoning loop.
+      if (qualityTier === 0) {
+        setGenerationPhase('⚡ Generando borrador rápido...');
+      } else {
+        startProgressTimer(qualityTier);
+      }
 
       const result = await generateArchitecturalVariations(
         contextImage || null,
@@ -213,9 +273,10 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
         'PHOTO',
         editPreferences,
         referenceImage,
-        useFastModel
+        qualityTier,
       );
 
+      stopProgressTimer();
       setGenerationPhase('');
 
       const modelStep: DesignStep = {
@@ -229,6 +290,29 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
       addStep(modelStep);
       setAppState(AppState.COMPLETE);
       setPendingMask(null);
+
+      // Show mask suggestion if AI recommends it
+      if (result.suggestMask && !pendingMask) {
+        setMaskSuggestion('💡 Para ediciones más precisas, usa la herramienta de máscara (✏️) para marcar la zona exacta');
+        setTimeout(() => setMaskSuggestion(null), 8000);
+      }
+
+      // Tell the user when the backend silently downgraded the tier
+      if (result.meta?.tier_downgrade) {
+        setDowngradeWarning(
+          `⚠️ El modelo principal no estaba disponible y se generó este render con un modelo de respaldo (${result.meta.used_model}). La calidad puede estar por debajo del tier ${result.meta.tier_label} que seleccionaste.`
+        );
+        setTimeout(() => setDowngradeWarning(null), 12000);
+      }
+
+      // Tell the user when they hit the daily budget cap and were forced to Draft
+      if (result.meta?.cap_hit) {
+        const spent = result.meta.spent_usd_today;
+        setCapHitWarning(
+          `🚫 Alcanzaste el límite de gasto diario${spent != null ? ` ($${spent.toFixed(2)})` : ''}. Este render se generó en modo Draft (gratuito). El límite se reinicia mañana.`
+        );
+        setTimeout(() => setCapHitWarning(null), 15000);
+      }
 
       // SAVE TO GALLERY
       if (result.images[0]) {
@@ -258,6 +342,7 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
       } catch { /* ignore */ }
 
     } catch (err: any) {
+      stopProgressTimer();
       setAppState(AppState.ERROR);
       setGenerationPhase('');
       setErrorMsg(err.message || "Generation failed.");
@@ -362,21 +447,30 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
                         />
                       </div>
 
-                      {/* Speed Mode Toggle */}
-                      <button
-                        onClick={() => setUseFastModel(!useFastModel)}
-                        className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wide border transition-all ${useFastModel
-                          ? 'bg-amber-500/10 border-amber-500/30 text-amber-400 hover:bg-amber-500/20'
-                          : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20'
-                          }`}
-                        title={useFastModel ? 'Draft Mode: Faster generation, lower quality' : 'Final Mode: Maximum quality, slower'}
-                      >
-                        {useFastModel ? (
-                          <><svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clipRule="evenodd" /></svg>Draft</>
-                        ) : (
-                          <><svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5 2a1 1 0 011 1v1h1a1 1 0 010 2H6v1a1 1 0 01-2 0V6H3a1 1 0 010-2h1V3a1 1 0 011-1zm0 10a1 1 0 011 1v1h1a1 1 0 110 2H6v1a1 1 0 11-2 0v-1H3a1 1 0 110-2h1v-1a1 1 0 011-1zM12 2a1 1 0 01.967.744L14.146 7.2 17.5 9.134a1 1 0 010 1.732l-3.354 1.935-1.18 4.455a1 1 0 01-1.933 0L9.854 12.8 6.5 10.866a1 1 0 010-1.732l3.354-1.935 1.18-4.455A1 1 0 0112 2z" clipRule="evenodd" /></svg>Final</>
-                        )}
-                      </button>
+                      {/* Quality Tier Selector */}
+                      <div className="flex items-center gap-1 bg-slate-800/70 border border-slate-700/50 rounded-full p-0.5">
+                        {([{ t: 0, icon: '⚡', label: 'Draft' }, { t: 1, icon: '✨', label: 'Std' }, { t: 2, icon: '🔥', label: 'HD' }, { t: 3, icon: '💎', label: '4K' }] as { t: number, icon: string, label: string }[]).map(({ t, icon, label }) => (
+                          <button
+                            key={t}
+                            onClick={() => setQualityTier(t)}
+                            title={[
+                              'Draft — Flash model, fast & cheap',
+                              'Standard — Pro model, 1K resolution',
+                              'HD — Pro model, 2K resolution (default)',
+                              'Ultra — Pro model, 4K resolution, slowest'
+                            ][t]}
+                            className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold transition-all ${qualityTier === t
+                              ? t === 0 ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                                : t === 1 ? 'bg-blue-500/20 text-blue-300 border border-blue-500/40'
+                                  : t === 2 ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                    : 'bg-purple-500/20 text-purple-300 border border-purple-500/40'
+                              : 'text-slate-500 hover:text-slate-300 border border-transparent'
+                              }`}
+                          >
+                            {icon} {label}
+                          </button>
+                        ))}
+                      </div>
                     </>
                   )}
 
@@ -442,7 +536,7 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
                               ${step.selectedImageIndex === imgIdx ? 'border-emerald-500 shadow-2xl ring-4 ring-emerald-500/10 scale-[1.01]' : 'border-slate-800 opacity-60 hover:opacity-100'}
                             `}
                           >
-                            <img src={img} alt="Variation" className="w-full aspect-[4/3] object-cover bg-black" />
+                            <img src={img} alt="Variation" className="w-full object-contain bg-black" style={{ maxHeight: '70vh' }} />
                             {step.selectedImageIndex === imgIdx && (
                               <div className="absolute top-4 right-4 bg-emerald-500 text-white p-1 rounded-full shadow-xl z-10">
                                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4"><path fillRule="evenodd" d="M16.704 4.153a.75.75 0 0 1-.143 1.052l-8 10.5a.75.75 0 0 1-1.127.075l-4.5-4.5a.75.75 0 0 1 1.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 0 1 1.05-.143Z" clipRule="evenodd" /></svg>
@@ -451,6 +545,34 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
                             <button onClick={(e) => { e.stopPropagation(); forceDownloadImage(img, `render-${idx}-${imgIdx}.png`); }} className="absolute bottom-4 right-4 p-2 bg-black/60 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity hover:bg-emerald-500 z-10 border-none cursor-pointer">
                               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4"><path d="M10.75 2.75a.75.75 0 0 0-1.5 0v8.614L6.295 8.235a.75.75 0 1 0-1.09 1.03l4.25 4.5a.75.75 0 0 0 1.09 0l4.25-4.5a.75.75 0 0 0-1.09-1.03l-2.955 3.129V2.75Z" /><path d="M3.5 12.75a.75.75 0 0 0-1.5 0v2.5A2.75 2.75 0 0 0 4.75 18h10.5A2.75 2.75 0 0 0 18 15.25v-2.5a.75.75 0 0 0-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5Z" /></svg>
                             </button>
+                            {step.role === 'model' && step.selectedImageIndex === imgIdx && (
+                              <button
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  setEnhancingIdx(idx);
+                                  try {
+                                    const { images: enhanced } = await backendApi.enhanceImage({ image: img });
+                                    if (enhanced?.[0]) {
+                                      const next = [...designSteps];
+                                      next[idx].images![imgIdx] = enhanced[0];
+                                      setDesignSteps(next);
+                                    }
+                                  } catch (err) {
+                                    console.error('Enhance failed:', err);
+                                  } finally {
+                                    setEnhancingIdx(null);
+                                  }
+                                }}
+                                disabled={enhancingIdx === idx}
+                                className="absolute bottom-4 left-4 px-3 py-1.5 bg-black/60 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity hover:bg-purple-500 z-10 border-none cursor-pointer flex items-center gap-1.5 text-xs font-bold"
+                              >
+                                {enhancingIdx === idx ? (
+                                  <><div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />HD...</>
+                                ) : (
+                                  <>✨ HD</>
+                                )}
+                              </button>
+                            )}
                           </div>
                         ))}
                       </div>
@@ -462,7 +584,7 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
                 <div className="flex flex-col items-center py-12 space-y-4 animate-pulse">
                   <div className="w-12 h-12 border-4 border-emerald-500/20 border-t-emerald-500 rounded-full animate-spin" />
                   <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">
-                    {generationPhase || (useFastModel ? '⚡ Draft Mode — Quick Generation...' : '✨ Final Mode — Maximum Quality...')}
+                    {generationPhase || (['⚡ Draft — Quick Gen...', '✨ Standard Quality...', '🔥 HD Generating...', '💎 Ultra 4K...'][qualityTier])}
                   </p>
                 </div>
               )}
@@ -473,6 +595,30 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
               )}
               <div ref={scrollBottomRef} />
             </div>
+
+            {/* MASK SUGGESTION TOAST */}
+            {maskSuggestion && (
+              <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 bg-amber-500/10 border border-amber-500/30 text-amber-200 px-6 py-3 rounded-2xl text-sm font-medium shadow-2xl backdrop-blur-xl animate-in slide-in-from-top-4 fade-in duration-300 max-w-lg text-center">
+                {maskSuggestion}
+                <button onClick={() => setMaskSuggestion(null)} className="ml-3 text-amber-400 hover:text-white font-bold">×</button>
+              </div>
+            )}
+
+            {/* TIER DOWNGRADE WARNING */}
+            {downgradeWarning && (
+              <div className="fixed top-36 left-1/2 -translate-x-1/2 z-50 bg-yellow-500/10 border border-yellow-500/40 text-yellow-100 px-6 py-3 rounded-2xl text-sm font-medium shadow-2xl backdrop-blur-xl animate-in slide-in-from-top-4 fade-in duration-300 max-w-xl text-center">
+                {downgradeWarning}
+                <button onClick={() => setDowngradeWarning(null)} className="ml-3 text-yellow-300 hover:text-white font-bold">×</button>
+              </div>
+            )}
+
+            {/* DAILY CAP WARNING */}
+            {capHitWarning && (
+              <div className="fixed top-52 left-1/2 -translate-x-1/2 z-50 bg-red-500/10 border border-red-500/40 text-red-100 px-6 py-3 rounded-2xl text-sm font-medium shadow-2xl backdrop-blur-xl animate-in slide-in-from-top-4 fade-in duration-300 max-w-xl text-center">
+                {capHitWarning}
+                <button onClick={() => setCapHitWarning(null)} className="ml-3 text-red-300 hover:text-white font-bold">×</button>
+              </div>
+            )}
 
             {/* STICKY BOTTOM INPUT */}
             <div className="fixed bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-slate-950 via-slate-950 to-transparent z-40">

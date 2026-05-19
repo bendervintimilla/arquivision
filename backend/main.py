@@ -21,20 +21,32 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 
 # SECURITY: Restrict CORS to known frontend origins only.
-# Set ALLOWED_ORIGINS env var as comma-separated list for custom domains.
-ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "").split(",") if os.environ.get("ALLOWED_ORIGINS") else ["*"]
-CORS(app, resources={r"/*": {"origins": "*"}})
+# Set ALLOWED_ORIGINS env var as a comma-separated list of allowed origins.
+# In dev (no env), defaults to local Vite/CRA ports. In prod, ALLOWED_ORIGINS
+# MUST be set to the deployed frontend URL — leaving it unset will not open
+# CORS to the world like before.
+_raw_origins = os.environ.get("ALLOWED_ORIGINS", "")
+ALLOWED_ORIGINS = (
+    [o.strip() for o in _raw_origins.split(",") if o.strip()]
+    if _raw_origins
+    else ["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173"]
+)
+CORS(app, resources={r"/*": {"origins": ALLOWED_ORIGINS}})
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
-SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
+SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "") or SUPABASE_ANON_KEY  # fallback
 SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET", "")
 
-# Model constants
-IMAGE_MODEL = "gemini-3-pro-image-preview"  # Pro model for professional quality (4K, thinking)
-FAST_IMAGE_MODEL = "gemini-2.5-flash-image" # Fast model for speed-oriented generation
-FAST_MODEL = "gemini-2.5-flash"             # Fast text/vision for analysis
-VIDEO_MODEL = "veo-3.1-fast-generate-preview"
+# Model constants — single source of truth lives in models_config.py
+# Phase 1 will flip tier 1/2/3 to OpenAI by editing only that file.
+from models_config import (
+    GEMINI_PRO_IMAGE as IMAGE_MODEL,
+    GEMINI_FAST_IMAGE as FAST_IMAGE_MODEL,
+    GEMINI_FAST_TEXT as FAST_MODEL,
+    VIDEO_MODEL,
+)
 
 # ---------- Auth Middleware ----------
 
@@ -60,7 +72,7 @@ def require_auth(f):
             f"{SUPABASE_URL}/auth/v1/user",
             headers={
                 "Authorization": f"Bearer {token}",
-                "apikey": SUPABASE_SERVICE_KEY or os.environ.get("SUPABASE_ANON_KEY", ""),
+                "apikey": SUPABASE_ANON_KEY,
             }
         )
         try:
@@ -78,6 +90,125 @@ def require_auth(f):
 def get_gemini_client():
     from google import genai
     return genai.Client(api_key=GEMINI_API_KEY)
+
+# ---------- Usage Logging ----------
+
+# Pricing + tier config live in models_config.py — single source of truth.
+# Imported here under the legacy names so the rest of main.py keeps working.
+from models_config import (
+    MODEL_PRICING as GEMINI_PRICING,   # legacy alias
+    TIER_CONFIG as QUALITY_TIERS,      # legacy alias
+    estimate_image_cost,
+)
+
+# Daily per-user OpenAI spend cap (USD). OWNER_USER_ID is exempt.
+DAILY_USER_CAP_USD = float(os.environ.get("DAILY_USER_CAP_USD", "25.0"))
+
+
+def check_user_budget(user_id: str) -> tuple:
+    """Return (ok_to_spend, spent_usd_today).
+
+    Sums today's estimated_cost_usd in usage_logs for the user. Soft-fails
+    open (returns True) if Supabase is unreachable — the goal is to stop
+    runaway spend, not to block the app on monitoring outages.
+    """
+    if not user_id or user_id == OWNER_USER_ID:
+        return True, 0.0
+    try:
+        import urllib.request as ureq
+        from datetime import datetime
+        today_iso = datetime.utcnow().strftime("%Y-%m-%d")
+        url = (
+            f"{SUPABASE_URL}/rest/v1/usage_logs"
+            f"?user_id=eq.{user_id}"
+            f"&created_at=gte.{today_iso}T00:00:00"
+            f"&select=estimated_cost_usd"
+        )
+        req = ureq.Request(url, headers={
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+        })
+        with ureq.urlopen(req, timeout=3) as r:
+            rows = json.loads(r.read().decode())
+        spent = sum(float(row.get("estimated_cost_usd", 0) or 0) for row in rows)
+        return spent < DAILY_USER_CAP_USD, spent
+    except Exception as e:
+        app.logger.warning(f"[budget] check failed (soft-fail open): {e}")
+        return True, 0.0
+
+
+# Owner ID also referenced from /api/admin/usage — declared here so
+# check_user_budget can use it. The duplicate assignment near that route
+# is preserved below for backwards reading order.
+OWNER_USER_ID = "b30e21bf-2aad-477f-93ef-8f6ec4b459c5"
+
+# Quality-tier prompt suffixes — instruct the model to match output quality expectations
+QUALITY_PROMPT_SUFFIX = {
+    0: "",
+    1: "\nOUTPUT QUALITY: High quality architectural render.",
+    2: "\nOUTPUT QUALITY: Professional HD quality. Sharp details, accurate material textures, correct lighting physics. No compression artifacts.",
+    3: "\nOUTPUT QUALITY: MAXIMUM 4K QUALITY. Ultra-sharp photorealistic render at the highest possible fidelity. "
+       "Every material texture, reflection, highlight, and shadow must be pixel-perfect with zero artifacts. "
+       "Professional architectural photography standard — equivalent to a high-end DSLR capture. "
+       "Render fine details: wood grain, stone veining, fabric weave, metal brushed finish, glass reflections. "
+       "Zero blur, zero distortion, zero banding. This is a premium deliverable."
+}
+
+def log_usage(user_id, endpoint, model, quality_tier, usage_metadata, duration_ms,
+              success=True, image_size=None, n_images=1):
+    """Log token usage and estimated cost to Supabase usage_logs table.
+
+    Cost computation auto-selects per-image vs per-token based on the
+    pricing entry shape in MODEL_PRICING.
+    """
+    try:
+        input_tokens  = getattr(usage_metadata, 'prompt_token_count', 0) or 0
+        output_tokens = getattr(usage_metadata, 'candidates_token_count', 0) or 0
+        total_tokens  = getattr(usage_metadata, 'total_token_count', 0) or (input_tokens + output_tokens)
+
+        pricing = GEMINI_PRICING.get(model, {})
+        # Image models: charge per output image (by size if available)
+        if "per_image" in pricing or "per_image_by_size" in pricing:
+            cost_usd = estimate_image_cost(model, image_size) * max(1, n_images)
+        # Text/vision models: per 1K tokens
+        elif "input_per_1k" in pricing:
+            cost_usd = (
+                (input_tokens / 1000) * pricing.get("input_per_1k", 0) +
+                (output_tokens / 1000) * pricing.get("output_per_1k", 0)
+            )
+        else:
+            # Legacy fallback for any model lacking a pricing entry
+            cost_usd = (input_tokens / 1000) * 0.001 + (output_tokens / 1000) * 0.004
+
+        import urllib.request
+        payload = json.dumps({
+            "user_id": user_id,
+            "endpoint": endpoint,
+            "model": model,
+            "quality_tier": quality_tier,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+            "estimated_cost_usd": round(cost_usd, 6),
+            "duration_ms": duration_ms,
+            "success": success,
+        }).encode()
+
+        req = urllib.request.Request(
+            f"{SUPABASE_URL}/rest/v1/usage_logs",
+            data=payload,
+            headers={
+                "apikey": SUPABASE_ANON_KEY,
+                "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal",
+            },
+            method="POST",
+        )
+        urllib.request.urlopen(req)
+        app.logger.info(f"[usage] {endpoint} | {model} | {total_tokens} tokens | ${cost_usd:.5f}")
+    except Exception as e:
+        app.logger.warning(f"[usage] Failed to log usage: {e}")
 
 # ---------- Health ----------
 
@@ -99,7 +230,7 @@ def health():
 @app.route("/api/classify-intent", methods=["POST"])
 @require_auth
 def classify_intent():
-    """Classify user's editing intent using fast model."""
+    """Classify user's editing intent using fast model with architectural vocabulary."""
     try:
         data = request.json
         command = data.get("command", "")
@@ -113,25 +244,56 @@ Classify this architectural editing command. Return ONLY valid JSON, no markdown
 
 USER COMMAND: "{command}"
 
+ARCHITECTURAL VOCABULARY GUIDE (Spanish → English):
+- cornisa/cornisas = cornice/cornices (decorative molding at ceiling-wall junction)
+- moldura/molduras = molding/trim (decorative wall panel frames)
+- cuarterón/cuarterones = panel/panels (recessed wall sections between moldings)
+- zócalo = baseboard/skirting board
+- hueco/vano = opening/span/reveal
+- encimera = countertop
+- faja perimetral = perimeter border/trim band on floor
+- al raz de / al raz = flush with (exactly level/aligned)
+- peninsula = kitchen peninsula/breakfast bar
+- focos = light fixtures/spotlights/downlights
+- papel tapiz = wallpaper
+- despiece = tile pattern/layout scheme
+- rosetón = ceiling rose/medallion
+- vigas = beams (structural or decorative)
+- tabique/muro = wall/partition
+- rodear/enmarcar = to frame/surround an element (e.g. "molduras que rodeen la TV")
+
 Return this exact JSON structure:
 {{
-  "mode": "EDIT" or "GENERATE" or "STYLE_TRANSFER" or "REMOVE_OBJECTS",
+  "mode": "EDIT" or "GENERATE" or "STYLE_TRANSFER" or "REMOVE_OBJECTS" or "PRECISION_EDIT",
+  "scale": "MACRO" or "DETAIL" or "MIXED",
   "preserveLayout": true/false,
   "preserveLighting": true/false,
   "preservePerspective": true/false,
-  "elementsToChange": ["list", "of", "elements"],
+  "elementsToChange": ["list", "of", "specific", "elements"],
   "elementsToKeep": ["list", "of", "elements"],
   "targetStyle": "style name or null",
-  "confidence": 0.0-1.0
+  "confidence": 0.0-1.0,
+  "suggestMask": true/false,
+  "framingTarget": "element being framed/surrounded or null",
+  "framingElement": "element used to frame (e.g. molduras, cornisas) or null"
 }}
 
 CLASSIFICATION RULES:
-- EDIT: User wants to modify specific elements (change color, swap furniture, etc.)
-- GENERATE: User wants a completely new image from text description
-- STYLE_TRANSFER: User wants to change the design style (modern, victorian, etc.)
-- REMOVE_OBJECTS: User wants to remove/delete specific things from the image
+- PRECISION_EDIT: Small, localized changes affecting <10% of image (change cornice profile, adjust fixture size, change door handle, change specific molding style, adjust countertop thickness, move a switch). Set suggestMask=true.
+- EDIT: Medium scope changes (change floor material, add furniture, change wall color).
+- STYLE_TRANSFER: Change the whole design style of the room.
+- REMOVE_OBJECTS: Delete/remove specific things from the image.
+- GENERATE: Create a completely new image from text description.
 
-For EDIT, STYLE_TRANSFER, REMOVE_OBJECTS: preserveLayout/Lighting/Perspective should be TRUE.
+scale RULES:
+- DETAIL: Changes affect <10% of the image (adjust a cornice, move a switch, change a handle, modify molding profile)
+- MACRO: Changes affect >50% of the image (full style change, entire floor replacement)
+- MIXED: Multiple changes at different scales
+
+FRAMING DETECTION:
+- If the user says "rodear", "rodeen", "enmarcar", "enmarquen", "alrededor de", "que no pasen por detrás", "que las molduras rodeen" → set framingTarget to the element being framed (e.g. "TV") and framingElement to what frames it (e.g. "molduras").
+
+For PRECISION_EDIT, EDIT, STYLE_TRANSFER, REMOVE_OBJECTS: preserveLayout/Lighting/Perspective should be TRUE.
 For GENERATE: all preserve flags should be FALSE.
 """
 
@@ -251,7 +413,15 @@ def save_creative_data():
 @app.route("/api/generate-image", methods=["POST"])
 @require_auth
 def generate_image():
-    """Proxy for image generation/editing via Gemini image model."""
+    """Image generation/editing endpoint. Dispatches to OpenAI (gpt-image-2)
+    or Gemini based on tier config. Cost-capped per user per day."""
+    t_start = time.time()
+    quality_tier = 2  # default HD
+    selected_model = IMAGE_MODEL
+    requested_model = IMAGE_MODEL
+    tier_downgrade = False  # set True when fallback fires (OpenAI→Gemini or 503)
+    cap_hit = False         # set True when user hit DAILY_USER_CAP_USD
+    spent_today = 0.0
     try:
         data = request.json
         prompt = data.get("prompt", "")
@@ -261,7 +431,31 @@ def generate_image():
         mask_base64 = data.get("mask")
         reference_base64 = data.get("referenceImage")
         reference_mime = data.get("referenceImageMime", "image/png")
-        use_fast_model = data.get("useFastModel", False)
+
+        # Quality tier: 0=Draft(flash), 1=Standard(1K), 2=HD(2K), 3=Ultra(4K)
+        # Also accept legacy useFastModel=true → tier 0
+        quality_tier = int(data.get("qualityTier", 2))
+        if data.get("useFastModel", False):
+            quality_tier = 0
+        quality_tier = max(0, min(3, quality_tier))
+
+        # --- BUDGET CAP ---
+        # Tier 0 (Gemini Flash) is cheap enough to always allow; the cap is
+        # to stop OpenAI / Pro spend runaway. Owner is exempt.
+        if quality_tier > 0:
+            ok, spent_today = check_user_budget(getattr(request, 'user_id', None))
+            if not ok:
+                app.logger.warning(
+                    f"[generate-image] User {request.user_id[:8]}... hit daily cap "
+                    f"(${spent_today:.2f} >= ${DAILY_USER_CAP_USD:.2f}). Forcing tier 0."
+                )
+                quality_tier = 0
+                cap_hit = True
+
+        tier_cfg = QUALITY_TIERS[quality_tier]
+        selected_model = tier_cfg["model"]
+        requested_model = selected_model
+        image_size = tier_cfg["image_size"]
 
         from google.genai import types
 
@@ -281,24 +475,184 @@ def generate_image():
             clean_ref = reference_base64.split(",")[1] if "," in reference_base64 else reference_base64
             parts.append(types.Part.from_bytes(data=base64.b64decode(clean_ref), mime_type=reference_mime))
 
+        # Append quality-tier prompt suffix for better output quality
+        quality_suffix = QUALITY_PROMPT_SUFFIX.get(quality_tier, "")
+        if quality_suffix:
+            prompt = prompt + quality_suffix
+
+        # --- DRY-RUN SHORT-CIRCUIT ---
+        # When dryRun=true the caller wants to inspect the final prompt + tier
+        # + estimated cost without paying for or waiting on a real generation.
+        # Used by AdminDashboard for prompt debugging.
+        if data.get("dryRun", False):
+            from models_config import estimate_image_cost
+            est_cost = estimate_image_cost(selected_model, image_size)
+            app.logger.info(f"[generate-image] DRY RUN — tier {quality_tier}, provider {tier_cfg.get('provider', 'gemini')}, model {selected_model}, n={tier_cfg.get('n', 1)}")
+            return jsonify({
+                "images": [],
+                "meta": {
+                    "tier": quality_tier,
+                    "tier_label": tier_cfg["label"],
+                    "tier_downgrade": False,
+                    "requested_model": requested_model,
+                    "used_model": selected_model,
+                    "provider": tier_cfg.get("provider", "gemini"),
+                    "n": tier_cfg.get("n", 1),
+                    "cap_hit": cap_hit,
+                    "spent_usd_today": round(spent_today, 4),
+                    "dry_run": True,
+                    "final_prompt": prompt,
+                    "system_instruction": system_instruction,
+                    "image_size": image_size,
+                    "has_image": bool(image_base64),
+                    "has_mask": bool(mask_base64),
+                    "has_reference": bool(reference_base64),
+                    "estimated_cost_usd": round(est_cost, 5),
+                    # Total est cost = per-image × n (relevant for batches)
+                    "estimated_total_cost_usd": round(est_cost * tier_cfg.get("n", 1), 5),
+                },
+            })
+
+        # --- PROVIDER DISPATCH ---
+        # Phase 1: tiers 1/2/3 route to OpenAI gpt-image-2 by default.
+        # If OpenAI fails (auth, 429, 5xx, timeout) we mark tier_downgrade
+        # and continue into the Gemini path below using GEMINI_PRO_IMAGE.
+        provider = tier_cfg.get("provider", "gemini")
+        if provider == "openai":
+            try:
+                from openai_client import openai_generate, openai_edit
+                # Prepend the system instruction to the prompt — OpenAI's
+                # images.generate / images.edit don't have a separate
+                # system_instruction field like Gemini does.
+                openai_prompt = prompt
+                if system_instruction:
+                    openai_prompt = f"{system_instruction}\n\n---\n\n{prompt}"
+
+                app.logger.info(
+                    f"[generate-image] OpenAI dispatch — tier {quality_tier} ({tier_cfg['label']}), "
+                    f"model {selected_model}, size {image_size}, has_image={bool(image_base64)}, "
+                    f"has_mask={bool(mask_base64)}, has_ref={bool(reference_base64)}"
+                )
+
+                if image_base64:
+                    openai_pngs = openai_edit(
+                        prompt=openai_prompt,
+                        image_b64=image_base64,
+                        mask_b64=mask_base64,
+                        reference_b64=reference_base64,
+                        n=tier_cfg.get("n", 1),
+                        size=image_size,
+                    )
+                else:
+                    openai_pngs = openai_generate(
+                        prompt=openai_prompt,
+                        n=tier_cfg.get("n", 1),
+                        size=image_size,
+                    )
+
+                if not openai_pngs:
+                    raise RuntimeError("OpenAI returned no images")
+
+                images_data_urls = [
+                    f"data:image/png;base64,{base64.b64encode(b).decode()}"
+                    for b in openai_pngs
+                ]
+                # Apply the same per-image size log line for parity with the Gemini path
+                size_kb = len(openai_pngs[0]) / 1024
+                app.logger.info(f"[generate-image] OpenAI success: ~{size_kb:.0f}KB, n={len(images_data_urls)}")
+
+                # Log usage (no token metadata from OpenAI image API — pass None)
+                log_usage(
+                    request.user_id, "generate-image", selected_model, quality_tier,
+                    None, int((time.time() - t_start) * 1000), True,
+                )
+
+                return jsonify({
+                    "images": images_data_urls,
+                    "meta": {
+                        "tier": quality_tier,
+                        "tier_label": tier_cfg["label"],
+                        "tier_downgrade": False,
+                        "requested_model": requested_model,
+                        "used_model": selected_model,
+                        "provider": "openai",
+                        "cap_hit": cap_hit,
+                        "spent_usd_today": round(spent_today, 4),
+                        "n": len(images_data_urls),
+                    },
+                })
+
+            except Exception as openai_err:
+                # OpenAI failed — log it, mark the downgrade, and fall through
+                # into the Gemini path below with GEMINI_PRO_IMAGE.
+                app.logger.warning(
+                    f"[generate-image] OpenAI failed ({type(openai_err).__name__}: {openai_err}), "
+                    f"falling back to Gemini Pro"
+                )
+                selected_model = IMAGE_MODEL  # GEMINI_PRO_IMAGE via alias
+                tier_downgrade = True
+                # Continue execution into the Gemini code block below.
+
         parts.append(types.Part.from_text(text=prompt))
 
-        # Use proper GenerateContentConfig with response_modalities
-        selected_model = FAST_IMAGE_MODEL if use_fast_model else IMAGE_MODEL
+        # Build image config based on tier
+        image_config = None
+        if image_size:
+            try:
+                image_config = types.ImageConfig(image_size=image_size)
+            except Exception as cfg_err:
+                app.logger.warning(f"[generate-image] ImageConfig error: {cfg_err}")
+
         config = types.GenerateContentConfig(
             response_modalities=["IMAGE"],
             system_instruction=system_instruction if system_instruction else None,
+            image_config=image_config,
         )
 
-        app.logger.info(f"[generate-image] Model: {selected_model}, Prompt length: {len(prompt)}, Has image: {bool(image_base64)}, Has mask: {bool(mask_base64)}")
+        app.logger.info(f"[generate-image] Tier {quality_tier} ({tier_cfg['label']}) | Model: {selected_model} | Res: {image_size or 'default'} | Has image: {bool(image_base64)}")
 
-        response = client.models.generate_content(
-            model=selected_model,
-            contents=parts,
-            config=config,
-        )
-
-        # Extract image data from response
+        try:
+            response = client.models.generate_content(
+                model=selected_model,
+                contents=parts,
+                config=config,
+            )
+        except Exception as api_err:
+            if "503" in str(api_err) and selected_model == IMAGE_MODEL:
+                app.logger.warning(f"[generate-image] 503 error with {selected_model}, falling back to {FAST_IMAGE_MODEL}")
+                selected_model = FAST_IMAGE_MODEL
+                tier_downgrade = True
+                
+                # Fallback: try Flash model WITH the same image_size config first
+                # Flash model supports 1K/2K/4K image_size too
+                fallback_config = types.GenerateContentConfig(
+                    response_modalities=["IMAGE"],
+                    system_instruction=system_instruction if system_instruction else None,
+                    image_config=image_config,  # Preserve image_size for quality
+                )
+                
+                try:
+                    response = client.models.generate_content(
+                        model=selected_model,
+                        contents=parts,
+                        config=fallback_config,
+                    )
+                except Exception as fallback_err:
+                    # Last resort: try Flash without image_size config
+                    app.logger.warning(f"[generate-image] Flash with image_size failed ({fallback_err}), trying without image_size")
+                    bare_config = types.GenerateContentConfig(
+                        response_modalities=["IMAGE"],
+                        system_instruction=system_instruction if system_instruction else None,
+                    )
+                    response = client.models.generate_content(
+                        model=selected_model,
+                        contents=parts,
+                        config=bare_config,
+                    )
+            else:
+                raise api_err
+                
+        # Extract image data
         images = []
         text_parts = []
         if response.candidates:
@@ -310,18 +664,115 @@ def generate_image():
                 elif hasattr(part, 'text') and part.text:
                     text_parts.append(part.text[:200])
 
-        if text_parts:
-            app.logger.info(f"[generate-image] Model also returned text: {text_parts}")
-
         if not images:
             app.logger.error(f"[generate-image] No images returned. Text parts: {text_parts}")
+            log_usage(request.user_id, "generate-image", selected_model, quality_tier, None, int((time.time()-t_start)*1000), False)
             return jsonify({"error": "No image generated — model returned text only", "text": text_parts}), 500
 
-        app.logger.info(f"[generate-image] Success: {len(images)} image(s) generated")
-        return jsonify({"images": images})
+        # Log size
+        b64_part = images[0].split(",")[1] if "," in images[0] else images[0]
+        size_kb = len(b64_part) * 3 / 4 / 1024
+        app.logger.info(f"[generate-image] Success: ~{size_kb:.0f}KB")
+
+        # Log usage to Supabase
+        log_usage(request.user_id, "generate-image", selected_model, quality_tier,
+                  getattr(response, 'usage_metadata', None), int((time.time()-t_start)*1000))
+
+        return jsonify({
+            "images": images,
+            "meta": {
+                "tier": quality_tier,
+                "tier_label": tier_cfg["label"],
+                "tier_downgrade": tier_downgrade,
+                "requested_model": requested_model,
+                "used_model": selected_model,
+                "provider": "gemini",
+                "cap_hit": cap_hit,
+                "spent_usd_today": round(spent_today, 4),
+            },
+        })
 
     except Exception as e:
         app.logger.error(f"[generate-image] Exception: {str(e)}")
+        log_usage(request.user_id if hasattr(request, 'user_id') else None, "generate-image",
+                  selected_model, quality_tier, None, int((time.time()-t_start)*1000), False)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/enhance-image", methods=["POST"])
+@require_auth
+def enhance_image():
+    """Dedicated quality enhancement pass — upscale and sharpen an existing render."""
+    try:
+        data = request.json
+        image_base64 = data.get("image", "")
+
+        if not image_base64:
+            return jsonify({"error": "No image provided"}), 400
+
+        from google.genai import types
+
+        client = get_gemini_client()
+        clean = image_base64.split(",")[1] if "," in image_base64 else image_base64
+
+        enhance_prompt = (
+            "ENHANCE this architectural render to MAXIMUM photorealistic quality at 4K resolution. "
+            "Do NOT change, add, or remove ANY objects, furniture, materials, colors, or elements. "
+            "ONLY improve the following with extreme precision:\n"
+            "- SHARPNESS: Every edge must be crisp and well-defined, zero blur\n"
+            "- MATERIAL TEXTURES: Enhance wood grain, stone veining, fabric weave, metal finish to photographic detail\n"
+            "- LIGHTING: Improve realism of light rays, ambient occlusion, global illumination, caustics\n"
+            "- SHADOWS: Accurate soft shadows with correct falloff and contact shadows\n"
+            "- REFLECTIONS: Correct specular highlights on glass, polished surfaces, water\n"
+            "- ANTI-ALIASING: Smooth all jagged edges, especially on furniture and architectural details\n"
+            "- COLOR DEPTH: Rich, natural color gradients with no banding\n"
+            "The output must look like a professional DSLR architectural photograph shot on a Phase One camera. "
+            "Keep the EXACT same composition, perspective, and content. Zero artifacts."
+        )
+
+        parts = [
+            types.Part.from_bytes(data=base64.b64decode(clean), mime_type="image/png"),
+            types.Part.from_text(text=enhance_prompt),
+        ]
+
+        # Use 4K resolution for enhancement (maximum quality)
+        image_config_enhance = None
+        try:
+            image_config_enhance = types.ImageConfig(
+                image_size="4K",
+            )
+        except Exception:
+            app.logger.warning("[enhance-image] ImageConfig not supported")
+
+        config = types.GenerateContentConfig(
+            response_modalities=["IMAGE"],
+            image_config=image_config_enhance,
+        )
+
+        app.logger.info(f"[enhance-image] Starting quality enhancement at {'4K' if image_config_enhance else 'default'} resolution")
+
+        response = client.models.generate_content(
+            model=IMAGE_MODEL,  # Always use pro model for enhancement
+            contents=parts,
+            config=config,
+        )
+
+        images = []
+        if response.candidates:
+            for part in response.candidates[0].content.parts:
+                if hasattr(part, 'inline_data') and part.inline_data:
+                    img_b64 = base64.b64encode(part.inline_data.data).decode()
+                    mime = part.inline_data.mime_type or "image/png"
+                    images.append(f"data:{mime};base64,{img_b64}")
+
+        if not images:
+            return jsonify({"error": "Enhancement failed — no image returned"}), 500
+
+        app.logger.info(f"[enhance-image] Success")
+        return jsonify({"images": images})
+
+    except Exception as e:
+        app.logger.error(f"[enhance-image] Exception: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -625,7 +1076,93 @@ def generate_video():
         return jsonify({"error": str(e)}), 500
 
 
+# OWNER_USER_ID is declared near check_user_budget (above).
+
+@app.route("/api/admin/usage", methods=["GET"])
+@require_auth
+def admin_usage():
+    """Admin-only: return aggregated usage & cost data from Supabase."""
+    if request.user_id != OWNER_USER_ID:
+        return jsonify({"error": "Forbidden"}), 403
+
+    try:
+        import urllib.request as ureq
+
+        # Use the user's own JWT from the request — RLS owner_read_all policy grants access
+        auth_header = request.headers.get("Authorization", "")
+        user_token = auth_header.split("Bearer ")[1] if "Bearer " in auth_header else SUPABASE_SERVICE_KEY
+
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {user_token}",
+            "Content-Type": "application/json",
+        }
+
+        def sb_get(path):
+            req = ureq.Request(f"{SUPABASE_URL}/rest/v1/{path}", headers=headers)
+            with ureq.urlopen(req) as r:
+                return json.loads(r.read().decode())
+
+        # All-time totals
+        rows = sb_get("usage_logs?select=input_tokens,output_tokens,total_tokens,estimated_cost_usd,model,quality_tier,endpoint,duration_ms,created_at,success&order=created_at.desc&limit=500")
+
+        total_calls   = len(rows)
+        total_tokens  = sum(r.get("total_tokens", 0) for r in rows)
+        total_cost    = sum(float(r.get("estimated_cost_usd", 0)) for r in rows)
+        successful    = sum(1 for r in rows if r.get("success", True))
+
+        # Per-model breakdown
+        model_stats = {}
+        for r in rows:
+            m = r.get("model", "unknown")
+            if m not in model_stats:
+                model_stats[m] = {"calls": 0, "tokens": 0, "cost": 0.0}
+            model_stats[m]["calls"] += 1
+            model_stats[m]["tokens"] += r.get("total_tokens", 0)
+            model_stats[m]["cost"] += float(r.get("estimated_cost_usd", 0))
+
+        # Daily breakdown (last 30 days) — group by date
+        from collections import defaultdict
+        daily = defaultdict(lambda: {"calls": 0, "tokens": 0, "cost": 0.0})
+        for r in rows:
+            day = (r.get("created_at") or "")[:10]
+            if day:
+                daily[day]["calls"] += 1
+                daily[day]["tokens"] += r.get("total_tokens", 0)
+                daily[day]["cost"] += float(r.get("estimated_cost_usd", 0))
+
+        # Recent calls
+        recent = [{
+            "created_at": r.get("created_at"),
+            "endpoint":   r.get("endpoint"),
+            "model":      r.get("model"),
+            "quality_tier": r.get("quality_tier"),
+            "total_tokens": r.get("total_tokens", 0),
+            "cost":        round(float(r.get("estimated_cost_usd", 0)), 5),
+            "duration_ms": r.get("duration_ms"),
+            "success":     r.get("success", True),
+        } for r in rows[:50]]
+
+        return jsonify({
+            "summary": {
+                "total_calls": total_calls,
+                "total_tokens": total_tokens,
+                "total_cost_usd": round(total_cost, 4),
+                "successful_calls": successful,
+                "avg_cost_per_call": round(total_cost / total_calls, 5) if total_calls else 0,
+            },
+            "by_model": model_stats,
+            "daily": dict(daily),
+            "recent": recent,
+        })
+
+    except Exception as e:
+        app.logger.error(f"[admin/usage] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
+
     if not GEMINI_API_KEY:
         print("WARNING: GEMINI_API_KEY not set!")
     port = int(os.environ.get("PORT", 5000))

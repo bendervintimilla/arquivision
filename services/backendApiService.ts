@@ -30,6 +30,27 @@ async function apiCall<T>(endpoint: string, body: any): Promise<T> {
   return res.json();
 }
 
+export interface GenerationMeta {
+  tier: number;
+  tier_label: string;
+  tier_downgrade: boolean;     // true when OpenAI→Gemini or 503 fallback fired
+  requested_model: string;
+  used_model: string;
+  provider?: 'openai' | 'gemini';
+  n?: number;                  // number of images returned in this batch
+  cap_hit?: boolean;           // true when user hit DAILY_USER_CAP_USD; tier forced to 0
+  spent_usd_today?: number;    // running total of today's spend for this user
+  // Populated only on dry-run responses (dryRun: true in the request)
+  dry_run?: boolean;
+  final_prompt?: string;
+  system_instruction?: string;
+  image_size?: string | null;
+  has_image?: boolean;
+  has_mask?: boolean;
+  has_reference?: boolean;
+  estimated_cost_usd?: number;
+}
+
 export const backendApi = {
   generateImage: (data: {
     prompt: string;
@@ -39,8 +60,11 @@ export const backendApi = {
     mask?: string;
     referenceImage?: string | null;
     referenceImageMime?: string;
-    useFastModel?: boolean;
-  }) => apiCall<{ images: string[] }>('/api/generate-image', data),
+    qualityTier?: number;       // 0=Draft, 1=Standard, 2=HD, 3=Ultra
+    useFastModel?: boolean;     // legacy — maps to tier 0
+    dryRun?: boolean;           // when true, returns prompt+meta without calling the model
+  }) => apiCall<{ images: string[]; meta?: GenerationMeta }>('/api/generate-image', data),
+
 
   analyzePlan: (data: {
     image: string;
@@ -92,8 +116,23 @@ export const backendApi = {
     object_tags?: string[];
   }) => apiCall<{ id: string }>('/api/save-creative-data', data),
 
+  enhanceImage: (data: {
+    image: string;
+  }) => apiCall<{ images: string[] }>('/api/enhance-image', data),
+
   healthCheck: async () => {
     const res = await fetch(`${BACKEND_URL}/api/health`);
     return res.json();
   },
+
+  getAdminUsage: async () => {
+    const headers = await getAuthHeaders();
+    const res = await fetch(`${BACKEND_URL}/api/admin/usage`, { headers });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || `Admin fetch failed: ${res.status}`);
+    }
+    return res.json();
+  },
 };
+
