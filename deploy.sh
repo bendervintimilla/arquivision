@@ -7,8 +7,13 @@ set -e
 PROJECT_ID="gen-lang-client-0947004571"
 REGION="europe-west1"
 
-# SECURITY: API key is NEVER hardcoded. Read from environment.
+# SECURITY: API keys are NEVER hardcoded. Read from environment.
 GEMINI_API_KEY="${GEMINI_API_KEY:?ERROR: Set GEMINI_API_KEY env var before deploying}"
+OPENAI_API_KEY="${OPENAI_API_KEY:?ERROR: Set OPENAI_API_KEY env var before deploying (Phase 1 swap to gpt-image-2)}"
+OPENAI_IMAGE_MODEL="${OPENAI_IMAGE_MODEL:-gpt-image-2}"
+OPENAI_IMAGE_TIMEOUT_S="${OPENAI_IMAGE_TIMEOUT_S:-180}"
+DAILY_USER_CAP_USD="${DAILY_USER_CAP_USD:-25.0}"
+
 SUPABASE_URL="https://axprxywbbrrlypfaycpb.supabase.co"
 SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF4cHJ4eXdiYnJybHlwZmF5Y3BiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkxNjEzODksImV4cCI6MjA4NDczNzM4OX0.0iIydaM-iFcabn-q63dqK_1CTLX8LRW_mGOr8qT0pZ0"
 
@@ -38,7 +43,7 @@ BACKEND_URL=$(gcloud run deploy archivision-backend \
   --project "$PROJECT_ID" \
   --region "$REGION" \
   --allow-unauthenticated \
-  --set-env-vars="GEMINI_API_KEY=$GEMINI_API_KEY,SUPABASE_URL=$SUPABASE_URL,SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY" \
+  --set-env-vars="GEMINI_API_KEY=$GEMINI_API_KEY,OPENAI_API_KEY=$OPENAI_API_KEY,OPENAI_IMAGE_MODEL=$OPENAI_IMAGE_MODEL,OPENAI_IMAGE_TIMEOUT_S=$OPENAI_IMAGE_TIMEOUT_S,DAILY_USER_CAP_USD=$DAILY_USER_CAP_USD,SUPABASE_URL=$SUPABASE_URL,SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY" \
   --timeout=300 \
   --memory=512Mi \
   --quiet \
