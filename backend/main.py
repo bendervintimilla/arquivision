@@ -53,11 +53,15 @@ from models_config import (
 SKIP_AUTH = os.environ.get("SKIP_AUTH", "false").lower() == "true"
 
 def require_auth(f):
-    """Validate Supabase JWT from Authorization header."""
+    """Validate Supabase JWT from Authorization header. Also stash the
+    raw token on the request so downstream Supabase calls (log_usage,
+    save-creative-data) can authenticate as the user — required for RLS
+    policies that gate inserts to auth.uid() = user_id."""
     @wraps(f)
     def decorated(*args, **kwargs):
         if SKIP_AUTH:
             request.user_id = "local-dev-user"
+            request.user_jwt = None
             return f(*args, **kwargs)
 
         auth_header = request.headers.get("Authorization", "")
@@ -79,6 +83,7 @@ def require_auth(f):
             with urllib.request.urlopen(req) as resp:
                 user_data = json.loads(resp.read().decode())
                 request.user_id = user_data.get("id")
+                request.user_jwt = token  # for downstream RLS-gated inserts
         except Exception as e:
             return jsonify({"error": "Invalid or expired token"}), 401
 
@@ -155,11 +160,17 @@ QUALITY_PROMPT_SUFFIX = {
 }
 
 def log_usage(user_id, endpoint, model, quality_tier, usage_metadata, duration_ms,
-              success=True, image_size=None, n_images=1):
+              success=True, image_size=None, n_images=1, user_jwt=None):
     """Log token usage and estimated cost to Supabase usage_logs table.
 
     Cost computation auto-selects per-image vs per-token based on the
     pricing entry shape in MODEL_PRICING.
+
+    user_jwt: caller's bearer token. When provided, the insert is
+    authenticated as that user — required for the RLS policy
+    users_insert_own_usage (auth.uid() = user_id). Without a JWT we fall
+    back to the service key if configured, otherwise the insert silently
+    drops with a warning (never blocks the user's actual request).
     """
     try:
         input_tokens  = getattr(usage_metadata, 'prompt_token_count', 0) or 0
@@ -194,12 +205,16 @@ def log_usage(user_id, endpoint, model, quality_tier, usage_metadata, duration_m
             "success": success,
         }).encode()
 
+        # Use the user's JWT when available so the row passes the
+        # users_insert_own_usage RLS policy. Falls back to service key when
+        # set (e.g. for system-initiated logs without a user context).
+        auth_token = user_jwt or SUPABASE_SERVICE_KEY
         req = urllib.request.Request(
             f"{SUPABASE_URL}/rest/v1/usage_logs",
             data=payload,
             headers={
                 "apikey": SUPABASE_ANON_KEY,
-                "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+                "Authorization": f"Bearer {auth_token}",
                 "Content-Type": "application/json",
                 "Prefer": "return=minimal",
             },
@@ -644,6 +659,8 @@ def generate_image():
                 log_usage(
                     request.user_id, "generate-image", selected_model, quality_tier,
                     None, int((time.time() - t_start) * 1000), True,
+                    image_size=image_size, n_images=len(images_data_urls),
+                    user_jwt=getattr(request, 'user_jwt', None),
                 )
 
                 return jsonify({
@@ -745,7 +762,8 @@ def generate_image():
 
         if not images:
             app.logger.error(f"[generate-image] No images returned. Text parts: {text_parts}")
-            log_usage(request.user_id, "generate-image", selected_model, quality_tier, None, int((time.time()-t_start)*1000), False)
+            log_usage(request.user_id, "generate-image", selected_model, quality_tier, None, int((time.time()-t_start)*1000), False,
+                      image_size=image_size, user_jwt=getattr(request, 'user_jwt', None))
             return jsonify({"error": "No image generated — model returned text only", "text": text_parts}), 500
 
         # Log size
@@ -755,7 +773,9 @@ def generate_image():
 
         # Log usage to Supabase
         log_usage(request.user_id, "generate-image", selected_model, quality_tier,
-                  getattr(response, 'usage_metadata', None), int((time.time()-t_start)*1000))
+                  getattr(response, 'usage_metadata', None), int((time.time()-t_start)*1000),
+                  image_size=image_size, n_images=len(images),
+                  user_jwt=getattr(request, 'user_jwt', None))
 
         return jsonify({
             "images": images,
@@ -774,7 +794,8 @@ def generate_image():
     except Exception as e:
         app.logger.error(f"[generate-image] Exception: {str(e)}")
         log_usage(request.user_id if hasattr(request, 'user_id') else None, "generate-image",
-                  selected_model, quality_tier, None, int((time.time()-t_start)*1000), False)
+                  selected_model, quality_tier, None, int((time.time()-t_start)*1000), False,
+                  user_jwt=getattr(request, 'user_jwt', None))
         return jsonify({"error": str(e)}), 500
 
 

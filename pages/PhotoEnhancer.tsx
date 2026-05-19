@@ -37,6 +37,15 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
   // Lets gpt-image-2 resolve rotation / hidden-side requests structurally.
   const [additionalViews, setAdditionalViews] = useState<string[]>([]);
   const additionalViewInputRef = useRef<HTMLInputElement>(null);
+  // Phase 8.1: one-time onboarding tip for the multi-view button.
+  // Dismissed via localStorage so returning users don't see it again.
+  const [showMultiViewTip, setShowMultiViewTip] = useState<boolean>(() => {
+    try { return !localStorage.getItem('av_seen_multiview_tip'); } catch { return false; }
+  });
+  const dismissMultiViewTip = () => {
+    setShowMultiViewTip(false);
+    try { localStorage.setItem('av_seen_multiview_tip', '1'); } catch { /* private mode */ }
+  };
   const [maskSuggestion, setMaskSuggestion] = useState<string | null>(null);
   const [enhancingIdx, setEnhancingIdx] = useState<number | null>(null);
   // Surfaced when the backend silently fell back from OpenAI/Pro to a lower
@@ -846,22 +855,40 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
                   onChange={handleAdditionalViewSelected}
                   className="hidden"
                 />
-                <button
-                  onClick={() => additionalViewInputRef.current?.click()}
-                  disabled={additionalViews.length >= 3}
-                  className={`p-3 rounded-xl transition-all relative ${additionalViews.length > 0 ? 'text-sky-400 bg-sky-500/10' : 'text-slate-500 hover:text-white hover:bg-slate-800'} disabled:opacity-30 disabled:cursor-not-allowed`}
-                  title={`Vista adicional del mismo espacio desde otro ángulo (${additionalViews.length}/3) — resuelve rotaciones`}
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-5 h-5">
-                    <rect x="3" y="3" width="7" height="7" rx="1" />
-                    <rect x="14" y="3" width="7" height="7" rx="1" />
-                    <rect x="3" y="14" width="7" height="7" rx="1" />
-                    <rect x="14" y="14" width="7" height="7" rx="1" />
-                  </svg>
-                  {additionalViews.length > 0 && (
-                    <span className="absolute -top-1 -right-1 w-4 h-4 bg-sky-500 text-white text-[9px] rounded-full flex items-center justify-center font-bold">{additionalViews.length}</span>
+                <div className="relative">
+                  <button
+                    onClick={() => { dismissMultiViewTip(); additionalViewInputRef.current?.click(); }}
+                    disabled={additionalViews.length >= 3}
+                    className={`p-3 rounded-xl transition-all relative ${additionalViews.length > 0 ? 'text-sky-400 bg-sky-500/10' : 'text-slate-500 hover:text-white hover:bg-slate-800'} disabled:opacity-30 disabled:cursor-not-allowed ${showMultiViewTip && getActiveContextImage() && additionalViews.length === 0 ? 'ring-2 ring-sky-500/60 animate-pulse' : ''}`}
+                    title={`Vista adicional del mismo espacio desde otro ángulo (${additionalViews.length}/3) — resuelve rotaciones`}
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-5 h-5">
+                      <rect x="3" y="3" width="7" height="7" rx="1" />
+                      <rect x="14" y="3" width="7" height="7" rx="1" />
+                      <rect x="3" y="14" width="7" height="7" rx="1" />
+                      <rect x="14" y="14" width="7" height="7" rx="1" />
+                    </svg>
+                    {additionalViews.length > 0 && (
+                      <span className="absolute -top-1 -right-1 w-4 h-4 bg-sky-500 text-white text-[9px] rounded-full flex items-center justify-center font-bold">{additionalViews.length}</span>
+                    )}
+                  </button>
+                  {/* ONBOARDING TIP — Phase 8.1 */}
+                  {showMultiViewTip && getActiveContextImage() && additionalViews.length === 0 && (
+                    <div className="absolute bottom-full mb-3 left-1/2 -translate-x-1/2 w-64 bg-sky-500/10 border border-sky-500/50 backdrop-blur-xl rounded-2xl p-3 shadow-2xl animate-in fade-in slide-in-from-bottom-2">
+                      <div className="text-[10px] font-bold text-sky-400 uppercase tracking-wider mb-1">🆕 Multi-vista</div>
+                      <p className="text-xs text-sky-100 leading-relaxed">
+                        Sube hasta 3 fotos del mismo espacio desde ángulos distintos. El AI usa las caras ocultas para girar muebles, ver "el otro lado" y rotaciones 3D.
+                      </p>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); dismissMultiViewTip(); }}
+                        className="absolute top-1 right-2 text-sky-300 hover:text-white text-xs"
+                      >
+                        ×
+                      </button>
+                      <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-px w-0 h-0 border-l-[6px] border-r-[6px] border-t-[6px] border-l-transparent border-r-transparent border-t-sky-500/50" />
+                    </div>
                   )}
-                </button>
+                </div>
                 <textarea
                   value={currentPrompt}
                   onChange={(e) => setCurrentPrompt(e.target.value)}
