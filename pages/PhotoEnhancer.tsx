@@ -46,11 +46,13 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
   // Surfaced when the user hit the daily $ cap and was forced to Tier 0.
   const [capHitWarning, setCapHitWarning] = useState<string | null>(null);
   // Modal shown when classify-intent flags a 3D rotation / spatial rearrange
-  // (high failure rate). Lets the user confirm or cancel before spending
-  // 2min + $0.12 on a structurally hard operation.
+  // (high failure rate). Lets the user confirm, cancel, or use the AI
+  // reformulation that's more likely to succeed.
   const [spatialModal, setSpatialModal] = useState<{
     message: string;
+    suggestedPrompt?: string | null;
     onProceed: () => void;
+    onUseSuggestion?: () => void;
     onCancel: () => void;
   } | null>(null);
   // Holds the setInterval that cycles OpenAI progress phases. Cleared on
@@ -279,15 +281,34 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
         const preIntent = await classifyIntent(promptToUse);
         const isRotation = (preIntent as any).is3DRotation === true;
         const warning = (preIntent as any).spatialWarning;
+        const suggestedPrompt = (preIntent as any).suggestedPrompt;
         if (isRotation && warning) {
           setAppState(AppState.IDLE);
           setGenerationPhase('');
           setSpatialModal({
             message: warning,
+            suggestedPrompt,
             onProceed: () => {
               setSpatialModal(null);
               handleGenerate(promptToUse, true); // skip the check this time
             },
+            onUseSuggestion: suggestedPrompt
+              ? () => {
+                  setSpatialModal(null);
+                  // Replace prompt in steps with the suggestion so the
+                  // history reflects what was actually requested.
+                  setDesignSteps(prev => {
+                    const updated = [...prev];
+                    const lastUserIdx = [...updated].reverse().findIndex(s => s.role === 'user' && s.text === promptToUse);
+                    if (lastUserIdx >= 0) {
+                      const realIdx = updated.length - 1 - lastUserIdx;
+                      updated[realIdx] = { ...updated[realIdx], text: suggestedPrompt };
+                    }
+                    return updated;
+                  });
+                  handleGenerate(suggestedPrompt, true);
+                }
+              : undefined,
             onCancel: () => {
               setSpatialModal(null);
             },
@@ -705,33 +726,52 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
             {/* SPATIAL ROTATION WARNING MODAL */}
             {spatialModal && (
               <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
-                <div className="bg-slate-900 border border-amber-500/40 rounded-3xl p-8 max-w-lg w-full shadow-2xl space-y-6">
+                <div className="bg-slate-900 border border-amber-500/40 rounded-3xl p-8 max-w-lg w-full shadow-2xl space-y-5">
                   <div className="space-y-2">
                     <div className="text-3xl">🔄</div>
                     <h3 className="text-xl font-bold text-white">Rotación 3D detectada</h3>
                     <p className="text-amber-200 text-sm leading-relaxed">{spatialModal.message}</p>
                   </div>
+
+                  {/* SUGGESTED REFORMULATION (Phase 7.2) */}
+                  {spatialModal.suggestedPrompt && (
+                    <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-4 space-y-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">💡 Sugerencia con mayor probabilidad de éxito:</p>
+                      <p className="text-sm text-emerald-100 italic leading-relaxed">"{spatialModal.suggestedPrompt}"</p>
+                    </div>
+                  )}
+
                   <div className="space-y-2 pt-2 border-t border-slate-800 text-xs text-slate-400">
-                    <p className="font-bold uppercase tracking-wider text-slate-500">Alternativas con mejor probabilidad de éxito:</p>
+                    <p className="font-bold uppercase tracking-wider text-slate-500">Otras alternativas:</p>
                     <ul className="space-y-1 list-disc list-inside">
                       <li><span className="text-sky-400 font-bold">⊞ Sube vistas adicionales</span> del mismo espacio desde otro ángulo (botón cuadrícula 2×2 abajo)</li>
-                      <li>Pide regenerar la habitación completa con el nuevo layout</li>
                       <li>Usa Plan Studio (modo vector) para mover muebles por coordenada</li>
                     </ul>
                   </div>
-                  <div className="flex gap-3">
-                    <button
-                      onClick={spatialModal.onCancel}
-                      className="flex-1 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-sm font-bold transition-all"
-                    >
-                      Cancelar
-                    </button>
-                    <button
-                      onClick={spatialModal.onProceed}
-                      className="flex-1 py-3 bg-amber-600/30 hover:bg-amber-600/50 border border-amber-500/50 text-amber-100 rounded-xl text-sm font-bold transition-all"
-                    >
-                      Intentar de todas formas
-                    </button>
+
+                  <div className={`grid gap-3 ${spatialModal.onUseSuggestion ? 'grid-cols-1' : 'grid-cols-2'}`}>
+                    {spatialModal.onUseSuggestion && (
+                      <button
+                        onClick={spatialModal.onUseSuggestion}
+                        className="py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-sm font-bold shadow-lg shadow-emerald-900/50 transition-all"
+                      >
+                        ✨ Usar la sugerencia
+                      </button>
+                    )}
+                    <div className="grid grid-cols-2 gap-3">
+                      <button
+                        onClick={spatialModal.onCancel}
+                        className="py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-sm font-bold transition-all"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        onClick={spatialModal.onProceed}
+                        className="py-3 bg-amber-600/30 hover:bg-amber-600/50 border border-amber-500/50 text-amber-100 rounded-xl text-sm font-bold transition-all"
+                      >
+                        Intentar igual
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>

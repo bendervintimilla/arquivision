@@ -109,7 +109,7 @@ export interface PlanImprovementStep {
 
 // --- Edit Intelligence Engine Types ---
 
-export type EditMode = 'EDIT' | 'GENERATE' | 'STYLE_TRANSFER' | 'REMOVE_OBJECTS' | 'PRECISION_EDIT';
+export type EditMode = 'EDIT' | 'GENERATE' | 'STYLE_TRANSFER' | 'REMOVE_OBJECTS' | 'PRECISION_EDIT' | 'REARRANGE';
 
 export interface EditIntent {
   mode: EditMode;
@@ -124,6 +124,14 @@ export interface EditIntent {
   suggestMask?: boolean;
   framingTarget?: string | null;
   framingElement?: string | null;
+  // Phase 1.11 — flagged when the user asked something structurally hard
+  // (e.g. 3D rotation of furniture) so we can warn before spending money
+  is3DRotation?: boolean;
+  spatialWarning?: string | null;
+  // Phase 7.2 — when is3DRotation is true, classifier returns a reformulated
+  // prompt with higher success probability (e.g. "regenerate the room with
+  // the sofa facing away from the window")
+  suggestedPrompt?: string | null;
 }
 
 export interface SceneAnalysis {

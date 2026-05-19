@@ -264,7 +264,7 @@ ARCHITECTURAL VOCABULARY GUIDE (Spanish → English):
 
 Return this exact JSON structure:
 {{
-  "mode": "EDIT" or "GENERATE" or "STYLE_TRANSFER" or "REMOVE_OBJECTS" or "PRECISION_EDIT",
+  "mode": "EDIT" or "GENERATE" or "STYLE_TRANSFER" or "REMOVE_OBJECTS" or "PRECISION_EDIT" or "REARRANGE",
   "scale": "MACRO" or "DETAIL" or "MIXED",
   "preserveLayout": true/false,
   "preserveLighting": true/false,
@@ -277,8 +277,23 @@ Return this exact JSON structure:
   "framingTarget": "element being framed/surrounded or null",
   "framingElement": "element used to frame (e.g. molduras, cornisas) or null",
   "is3DRotation": true/false,
-  "spatialWarning": "string explaining why this is structurally hard, or null"
+  "spatialWarning": "string explaining why this is structurally hard, or null",
+  "suggestedPrompt": "reformulated prompt with higher success probability, or null"
 }}
+
+REARRANGE mode: when the user wants to physically reorganize the SPACE
+(rotate furniture, move items to different walls, change room layout
+entirely) — set mode=REARRANGE. This mode accepts that photo fidelity
+must be sacrificed for spatial accuracy. The render will regenerate
+the room with the new layout instead of editing the existing photo.
+
+When is3DRotation=true, also set suggestedPrompt to a Spanish reformulation
+that's more likely to succeed. Example:
+  user: "gira el sofá 90 grados para que quede dando la espalda a la ventana"
+  suggestedPrompt: "Regenera la habitación con el sofá orientado dando la
+    espalda a la ventana. Mantén el mismo estilo, materiales e iluminación
+    pero acepta cambios en la perspectiva si es necesario."
+Use REARRANGE as the implicit mode for these suggestedPrompts.
 
 3D ROTATION / SPATIAL REARRANGEMENT DETECTION (critical — high failure rate):
 Set is3DRotation=true and provide spatialWarning when the user asks for:

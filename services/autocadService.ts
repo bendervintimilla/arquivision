@@ -252,6 +252,36 @@ FINAL REMINDER — Execute this instruction fully: "${userCommand}"
     `.trim();
   }
 
+  // For REARRANGE — the user asked for a layout change that requires
+  // regenerating the room geometry. Accept lower photo fidelity in
+  // exchange for spatial accuracy.
+  if (intent.mode === 'REARRANGE') {
+    return `
+🔄 LAYOUT REARRANGE — REGENERATE THE ROOM WITH NEW SPATIAL LAYOUT:
+"${userCommand}"
+
+The user wants a physical reorganization (rotation, repositioning) that cannot
+be done by editing the existing photo. You will REGENERATE this room with the
+requested layout change.
+
+RULES:
+- Keep the same architectural style, materials, colors, lighting mood, and
+  finishes as the original.
+- Apply the requested spatial change accurately — that is the PRIORITY.
+- Camera perspective may shift to a natural angle showing the new layout best.
+- Maintain the same room type, approximate dimensions, and overall feel.
+- Do NOT invent new rooms, levels, or completely change the architectural style.
+- Preserve floor material, wall colors, window/door positions when possible.
+
+Original scene reference: ${sceneAnalysis.description}
+Original style: ${sceneAnalysis.architecture}
+Original lighting: ${sceneAnalysis.lighting}
+Original palette: ${(sceneAnalysis.colorPalette || []).join(', ')}
+
+FINAL CHECK — Apply the spatial change: "${userCommand}"
+    `.trim();
+  }
+
   // For REMOVE_OBJECTS
   if (intent.mode === 'REMOVE_OBJECTS') {
     return `
