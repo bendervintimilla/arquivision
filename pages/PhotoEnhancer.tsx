@@ -4,7 +4,7 @@ import { ImageUploader } from '../components/ImageUploader';
 import { MaskEditor } from '../components/MaskEditor';
 import { DESIGN_PRESETS } from '../constants';
 import { AppState, DesignStep, RenderAsset, EditContextPreferences, EditMode } from '../types';
-import { generateArchitecturalVariations, clearSceneCache } from '../services/geminiService';
+import { generateArchitecturalVariations, clearSceneCache, classifyIntent } from '../services/geminiService';
 import { backendApi } from '../services/backendApiService';
 import { forceDownloadImage } from '../services/downloadHelper';
 import { compressImage } from '../services/fileService';
@@ -41,6 +41,14 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
   const [downgradeWarning, setDowngradeWarning] = useState<string | null>(null);
   // Surfaced when the user hit the daily $ cap and was forced to Tier 0.
   const [capHitWarning, setCapHitWarning] = useState<string | null>(null);
+  // Modal shown when classify-intent flags a 3D rotation / spatial rearrange
+  // (high failure rate). Lets the user confirm or cancel before spending
+  // 2min + $0.12 on a structurally hard operation.
+  const [spatialModal, setSpatialModal] = useState<{
+    message: string;
+    onProceed: () => void;
+    onCancel: () => void;
+  } | null>(null);
   // Holds the setInterval that cycles OpenAI progress phases. Cleared on
   // result arrival, error, or component unmount.
   const phaseTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -224,11 +232,44 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
     handleGenerate();
   };
 
-  const handleGenerate = async (overridePrompt?: string) => {
+  const handleGenerate = async (overridePrompt?: string, skipSpatialCheck = false) => {
     const promptToUse = overridePrompt || currentPrompt;
     if (!promptToUse) return;
 
     const contextImage = getActiveContextImage();
+
+    // PRE-FLIGHT: For paid tiers with a source image, check if this is a
+    // 3D rotation / spatial rearrange — these have a high failure rate
+    // across ALL image-to-image models (Gemini, GPT, Flux). Better to warn
+    // the user upfront than spend 2 min + $0.12 on something unlikely to
+    // work. The classify call is cheap (~$0.0001).
+    if (!skipSpatialCheck && qualityTier > 0 && contextImage) {
+      setAppState(AppState.GENERATING);
+      setGenerationPhase('🧠 Verificando intención...');
+      try {
+        const preIntent = await classifyIntent(promptToUse);
+        const isRotation = (preIntent as any).is3DRotation === true;
+        const warning = (preIntent as any).spatialWarning;
+        if (isRotation && warning) {
+          setAppState(AppState.IDLE);
+          setGenerationPhase('');
+          setSpatialModal({
+            message: warning,
+            onProceed: () => {
+              setSpatialModal(null);
+              handleGenerate(promptToUse, true); // skip the check this time
+            },
+            onCancel: () => {
+              setSpatialModal(null);
+            },
+          });
+          return;
+        }
+      } catch (e) {
+        // Pre-classify failed — proceed normally rather than block
+        console.warn('Pre-classify spatial check failed, proceeding:', e);
+      }
+    }
 
     setAppState(AppState.GENERATING);
     setErrorMsg(null);
@@ -333,7 +374,9 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
           user_command: promptToUse,
           detected_intent: result.intent,
           prompt_sent: result.promptSent,
-          model_used: 'gemini-3-pro-image-preview',
+          // Use the model the backend actually used (may differ from the
+          // requested one when the OpenAI→Gemini fallback fires).
+          model_used: result.meta?.used_model || 'unknown',
           user_accepted: true,
           page_source: 'PHOTO',
           style_tags: result.intent?.targetStyle ? [result.intent.targetStyle] : [],
@@ -617,6 +660,41 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
               <div className="fixed top-52 left-1/2 -translate-x-1/2 z-50 bg-red-500/10 border border-red-500/40 text-red-100 px-6 py-3 rounded-2xl text-sm font-medium shadow-2xl backdrop-blur-xl animate-in slide-in-from-top-4 fade-in duration-300 max-w-xl text-center">
                 {capHitWarning}
                 <button onClick={() => setCapHitWarning(null)} className="ml-3 text-red-300 hover:text-white font-bold">×</button>
+              </div>
+            )}
+
+            {/* SPATIAL ROTATION WARNING MODAL */}
+            {spatialModal && (
+              <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
+                <div className="bg-slate-900 border border-amber-500/40 rounded-3xl p-8 max-w-lg w-full shadow-2xl space-y-6">
+                  <div className="space-y-2">
+                    <div className="text-3xl">🔄</div>
+                    <h3 className="text-xl font-bold text-white">Rotación 3D detectada</h3>
+                    <p className="text-amber-200 text-sm leading-relaxed">{spatialModal.message}</p>
+                  </div>
+                  <div className="space-y-2 pt-2 border-t border-slate-800 text-xs text-slate-400">
+                    <p className="font-bold uppercase tracking-wider text-slate-500">Alternativas con mejor probabilidad de éxito:</p>
+                    <ul className="space-y-1 list-disc list-inside">
+                      <li>Pide regenerar la habitación completa con el nuevo layout</li>
+                      <li>Sube una foto de referencia desde el ángulo deseado</li>
+                      <li>Usa Plan Studio (modo vector) para mover muebles por coordenada</li>
+                    </ul>
+                  </div>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={spatialModal.onCancel}
+                      className="flex-1 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-sm font-bold transition-all"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      onClick={spatialModal.onProceed}
+                      className="flex-1 py-3 bg-amber-600/30 hover:bg-amber-600/50 border border-amber-500/50 text-amber-100 rounded-xl text-sm font-bold transition-all"
+                    >
+                      Intentar de todas formas
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
 

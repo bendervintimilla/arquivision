@@ -275,8 +275,23 @@ Return this exact JSON structure:
   "confidence": 0.0-1.0,
   "suggestMask": true/false,
   "framingTarget": "element being framed/surrounded or null",
-  "framingElement": "element used to frame (e.g. molduras, cornisas) or null"
+  "framingElement": "element used to frame (e.g. molduras, cornisas) or null",
+  "is3DRotation": true/false,
+  "spatialWarning": "string explaining why this is structurally hard, or null"
 }}
+
+3D ROTATION / SPATIAL REARRANGEMENT DETECTION (critical — high failure rate):
+Set is3DRotation=true and provide spatialWarning when the user asks for:
+- Physical rotation of objects: "gira", "rotar", "rotate", "voltear", "flip"
+- Reorientation: "que quede dando la espalda a X", "facing the other way", "hacia la ventana"
+- Degree-based rotation: "90°", "90 grados", "180°", "180 degrees"
+- Moving furniture to a different physical position: "muévelo al otro lado", "ponlo en el lado opuesto"
+- Camera-relative changes: "vista desde el otro ángulo", "view from the other side"
+
+When is3DRotation=true, set spatialWarning to a short Spanish message like:
+"Las rotaciones 3D de muebles son notoriamente difíciles para modelos image-to-image — el AI no puede ver las caras ocultas del objeto. Considera regenerar la habitación con el nuevo layout desde cero o subir una foto de referencia desde el ángulo deseado."
+
+If the request is NOT a 3D rotation, set is3DRotation=false and spatialWarning=null.
 
 CLASSIFICATION RULES:
 - PRECISION_EDIT: Small, localized changes affecting <10% of image (change cornice profile, adjust fixture size, change door handle, change specific molding style, adjust countertop thickness, move a switch). Set suggestMask=true.
@@ -534,6 +549,12 @@ def generate_image():
                     f"has_mask={bool(mask_base64)}, has_ref={bool(reference_base64)}"
                 )
 
+                # Quality knob by tier:
+                #   1 (Standard) + 2 (HD): "medium" — favors source fidelity over creative reinvention.
+                #     gpt-image-2 at "high" is notorious for hallucinating new architectural elements.
+                #   3 (Ultra): "high" — premium hero shot, accepts more creative liberty.
+                quality_knob = "high" if quality_tier >= 3 else "medium"
+
                 if image_base64:
                     openai_pngs = openai_edit(
                         prompt=openai_prompt,
@@ -542,12 +563,14 @@ def generate_image():
                         reference_b64=reference_base64,
                         n=tier_cfg.get("n", 1),
                         size=image_size,
+                        quality=quality_knob,
                     )
                 else:
                     openai_pngs = openai_generate(
                         prompt=openai_prompt,
                         n=tier_cfg.get("n", 1),
                         size=image_size,
+                        quality="high",  # text-to-image has no source to preserve
                     )
 
                 if not openai_pngs:

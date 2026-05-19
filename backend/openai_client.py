@@ -70,8 +70,13 @@ def _b64_to_bytes(maybe_data_url: Optional[str]) -> Optional[bytes]:
 
 # ---------- public API ----------
 
-def openai_generate(prompt: str, n: int = 1, size: Optional[str] = None) -> List[bytes]:
-    """Text-to-image. Returns N PNG byte payloads."""
+def openai_generate(prompt: str, n: int = 1, size: Optional[str] = None,
+                    quality: str = "high") -> List[bytes]:
+    """Text-to-image. Returns N PNG byte payloads.
+
+    quality: "low" | "medium" | "high". For pure text-to-image we default to
+    high because there's no source to be faithful to.
+    """
     client = get_client()
     model = os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-2")
     resp = client.images.generate(
@@ -79,8 +84,7 @@ def openai_generate(prompt: str, n: int = 1, size: Optional[str] = None) -> List
         prompt=prompt,
         n=n,
         size=_resolve_size(size),
-        # gpt-image-2 accepts "high" / "medium" / "low" for quality
-        quality="high",
+        quality=quality,
     )
     out: List[bytes] = []
     for d in resp.data:
@@ -102,7 +106,13 @@ def openai_edit(
     reference_b64: Optional[str] = None,
     n: int = 1,
     size: Optional[str] = None,
+    quality: str = "medium",
 ) -> List[bytes]:
+    """Edit an existing image. Default quality is "medium" — gpt-image-2 at
+    "high" can be over-creative and invent architectural elements that don't
+    exist in the source. For fidelity-critical architectural edits, "medium"
+    preserves the source much better. Use "high" only when the user has
+    explicitly opted into Ultra tier."""
     """
     Image-to-image edit. Returns N PNG byte payloads.
 
@@ -138,7 +148,7 @@ def openai_edit(
         "image": images_arg,
         "n": n,
         "size": _resolve_size(size),
-        "quality": "high",
+        "quality": quality,
     }
     if mask_bytes:
         kwargs["mask"] = ("mask.png", mask_bytes, "image/png")
