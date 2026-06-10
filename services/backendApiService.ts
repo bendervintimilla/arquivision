@@ -14,12 +14,13 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
   };
 }
 
-async function apiCall<T>(endpoint: string, body: any): Promise<T> {
+async function apiCall<T>(endpoint: string, body: any, signal?: AbortSignal): Promise<T> {
   const headers = await getAuthHeaders();
   const res = await fetch(`${BACKEND_URL}${endpoint}`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
+    signal,
   });
 
   if (!res.ok) {
@@ -70,7 +71,7 @@ export const backendApi = {
     // Backend prepends them as cumulative context to keep iterations
     // consistent with the original design intent.
     editHistory?: string[];
-  }) => apiCall<{ images: string[]; meta?: GenerationMeta }>('/api/generate-image', data),
+  }, signal?: AbortSignal) => apiCall<{ images: string[]; meta?: GenerationMeta }>('/api/generate-image', data, signal),
 
 
   analyzePlan: (data: {

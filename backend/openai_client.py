@@ -59,6 +59,34 @@ def _resolve_size(size: Optional[str]) -> str:
     return _SIZE_MAP.get(size, size)
 
 
+def _aspect_aware_size(size_label: Optional[str], image_bytes: bytes) -> str:
+    """Pick an output size that matches the source photo's orientation.
+
+    The tier config only says "1K"/"2K"/"4K"; before this, 2K always meant
+    1536x1024 landscape, so portrait photos came back cropped/stretched.
+
+    - 1K stays 1024x1024 (cheap iteration tier, orientation matters less)
+    - 2K picks 1536x1024 / 1024x1536 / 1024x1024 by source orientation
+    - 4K stays 2048x2048
+    Explicit pixel sizes pass through untouched.
+    """
+    if size_label not in ("1K", "2K", "4K"):
+        return _resolve_size(size_label)
+    if size_label != "2K":
+        return _resolve_size(size_label)
+    try:
+        from PIL import Image
+        w, h = Image.open(io.BytesIO(image_bytes)).size
+        ratio = w / h
+    except Exception:
+        return _resolve_size(size_label)
+    if ratio > 1.15:
+        return "1536x1024"
+    if ratio < 0.87:
+        return "1024x1536"
+    return "1024x1024"
+
+
 def _b64_to_bytes(maybe_data_url: Optional[str]) -> Optional[bytes]:
     """Accept either a plain base64 string or a data: URL."""
     if not maybe_data_url:
@@ -181,7 +209,7 @@ def openai_edit(
         "prompt": prompt,
         "image": images_arg,
         "n": n,
-        "size": _resolve_size(size),
+        "size": _aspect_aware_size(size, image_bytes),
         "quality": quality,
     }
     if mask_bytes:

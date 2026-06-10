@@ -29,6 +29,11 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
   const [currentPrompt, setCurrentPrompt] = useState<string>('');
   const [initials, setInitials] = useState<string>('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Prompt of the last failed generation — powers the "Reintentar" button so
+  // a 2-minute failure doesn't force the user to retype everything.
+  const [lastFailedPrompt, setLastFailedPrompt] = useState<string | null>(null);
+  // In-flight generation controller — lets the Cancel button abort the fetch.
+  const abortRef = useRef<AbortController | null>(null);
   const [isMasking, setIsMasking] = useState(false);
   const [pendingMask, setPendingMask] = useState<string | null>(null);
   const [referenceImage, setReferenceImage] = useState<string | null>(null);
@@ -164,11 +169,13 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
   };
 
   const handleReset = () => {
+    abortRef.current?.abort();
     setAppState(AppState.IDLE);
     resetConversation();
     setCurrentPrompt('');
     setStartTextPrompt('');
     setErrorMsg(null);
+    setLastFailedPrompt(null);
     setPendingMask(null);
     setContextConfigured(false);
     setGenerationPhase('');
@@ -346,6 +353,9 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
 
     setCurrentPrompt('');
 
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     try {
       // Get AI context (memory + conversation summary + recent messages)
       const aiContext = await getAIContext();
@@ -384,10 +394,12 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
         qualityTier,
         additionalViews,  // Phase 6
         editHistory,      // Phase 2
+        controller.signal,
       );
 
       stopProgressTimer();
       setGenerationPhase('');
+      setLastFailedPrompt(null);
 
       const modelStep: DesignStep = {
         id: `step-${Date.now()}-model`,
@@ -455,8 +467,15 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
 
     } catch (err: any) {
       stopProgressTimer();
-      setAppState(AppState.ERROR);
       setGenerationPhase('');
+      if (err?.name === 'AbortError' || controller.signal.aborted) {
+        // User cancelled — restore the prompt and return to a usable state.
+        setCurrentPrompt(promptToUse);
+        setAppState(AppState.READY);
+        return;
+      }
+      setAppState(AppState.ERROR);
+      setLastFailedPrompt(promptToUse);
       setErrorMsg(err.message || "Generation failed.");
     }
   };
@@ -693,16 +712,33 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
                 </div>
               ))}
               {appState === AppState.GENERATING && (
-                <div className="flex flex-col items-center py-12 space-y-4 animate-pulse">
+                <div className="flex flex-col items-center py-12 space-y-4">
                   <div className="w-12 h-12 border-4 border-emerald-500/20 border-t-emerald-500 rounded-full animate-spin" />
-                  <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">
+                  <p className="text-xs font-bold text-slate-500 uppercase tracking-widest animate-pulse">
                     {generationPhase || (['⚡ Draft — Quick Gen...', '✨ Standard Quality...', '🔥 HD Generating...', '💎 Ultra 4K...'][qualityTier])}
                   </p>
+                  <button
+                    onClick={() => abortRef.current?.abort()}
+                    className="px-4 py-2 bg-slate-800 hover:bg-red-900/30 hover:text-red-300 border border-slate-700 hover:border-red-900/50 rounded-full text-xs font-bold text-slate-400 transition-all"
+                  >
+                    ✕ Cancelar
+                  </button>
                 </div>
               )}
               {errorMsg && (
-                <div className="p-4 bg-red-900/20 border border-red-800 rounded-xl text-red-300 text-sm text-center">
-                  {errorMsg}
+                <div className="p-4 bg-red-900/20 border border-red-800 rounded-xl text-red-300 text-sm text-center space-y-3">
+                  <p>{errorMsg}</p>
+                  {lastFailedPrompt && (
+                    <button
+                      onClick={() => {
+                        setErrorMsg(null);
+                        handleGenerate(lastFailedPrompt, true);
+                      }}
+                      className="px-5 py-2 bg-red-900/30 hover:bg-red-800/40 border border-red-700/50 rounded-full text-xs font-bold text-red-200 transition-all"
+                    >
+                      ↻ Reintentar
+                    </button>
+                  )}
                 </div>
               )}
               <div ref={scrollBottomRef} />
