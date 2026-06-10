@@ -351,7 +351,12 @@ export const generateArchitecturalVariations = async (
   });
 
   if (!images || images.length === 0) throw new Error("No image generated");
-  const result = initials ? [await applyWatermark(images[0], initials)] : [images[0]];
+  // Keep EVERY image the backend returned — tiers 1/2 generate n=2 variations
+  // and the user already paid for both. Discarding all but the first was
+  // burning 50% of the spend on those tiers.
+  const result = initials
+    ? await Promise.all(images.map(im => applyWatermark(im, initials)))
+    : images;
 
   // --- FIX A: Clear scene cache after every successful edit ---
   // Each edit produces a new image. Next edit should analyze the updated state,

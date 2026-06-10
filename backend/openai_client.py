@@ -68,6 +68,30 @@ def _b64_to_bytes(maybe_data_url: Optional[str]) -> Optional[bytes]:
     return base64.b64decode(maybe_data_url)
 
 
+def _bw_mask_to_alpha(mask_bytes: bytes, source_bytes: bytes) -> bytes:
+    """Convert the frontend's black/white mask to what images.edit expects.
+
+    MaskEditor produces an opaque PNG where WHITE = edit zone, BLACK = keep.
+    OpenAI's edit endpoint ignores luminance entirely — the editable region
+    is defined by TRANSPARENT pixels (alpha=0). An opaque mask therefore
+    means "edit nothing". Here: white → transparent, black → opaque.
+
+    The mask is also resized to the source image's dimensions — the frontend
+    compresses the source per quality tier after the mask was drawn, so the
+    two can arrive with different sizes, which the API rejects.
+    """
+    from PIL import Image
+    src = Image.open(io.BytesIO(source_bytes))
+    m = Image.open(io.BytesIO(mask_bytes)).convert("L")
+    if m.size != src.size:
+        m = m.resize(src.size, Image.NEAREST)
+    rgba = Image.new("RGBA", src.size, (0, 0, 0, 255))
+    rgba.putalpha(m.point(lambda v: 255 - v))
+    buf = io.BytesIO()
+    rgba.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 # ---------- public API ----------
 
 def openai_generate(prompt: str, n: int = 1, size: Optional[str] = None,
@@ -161,7 +185,11 @@ def openai_edit(
         "quality": quality,
     }
     if mask_bytes:
-        kwargs["mask"] = ("mask.png", mask_bytes, "image/png")
+        # Convert WHITE=edit B/W mask → alpha mask (transparent=edit) and
+        # match the source dimensions. Without this the opaque mask tells
+        # OpenAI to edit nothing.
+        alpha_mask = _bw_mask_to_alpha(mask_bytes, image_bytes)
+        kwargs["mask"] = ("mask.png", alpha_mask, "image/png")
 
     resp = client.images.edit(**kwargs)
     out: List[bytes] = []
