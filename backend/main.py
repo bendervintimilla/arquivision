@@ -799,6 +799,135 @@ def generate_image():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/ab-compare", methods=["POST"])
+@require_auth
+def ab_compare():
+    """A/B lab: run the SAME prompt + image through OpenAI (gpt-image-2) and
+    Gemini Pro Image in parallel. Returns both results with per-provider
+    timing and estimated cost so renders can be compared side by side.
+
+    Both run at HD-equivalent settings (2K, n=1) so the comparison is fair:
+    same prompt, same inputs, same resolution class.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    data = request.json
+    prompt = data.get("prompt", "")
+    system_instruction = data.get("systemInstruction", "")
+    image_b64 = data.get("image")
+    image_mime = data.get("imageMime", "image/png")
+    mask_b64 = data.get("mask")
+    reference_b64 = data.get("referenceImage")
+
+    if not prompt:
+        return jsonify({"error": "prompt is required"}), 400
+
+    # Same budget gate as paid tiers — an A/B run costs both providers at once.
+    ok, spent_today = check_user_budget(getattr(request, "user_id", None))
+    if not ok:
+        return jsonify({
+            "error": f"Límite de gasto diario alcanzado (${spent_today:.2f}). El A/B usa ambos proveedores; inténtalo mañana."
+        }), 429
+
+    def _clean(b64):
+        return b64.split(",")[1] if "," in b64 else b64
+
+    def _run_openai():
+        t0 = time.time()
+        from models_config import OPENAI_IMAGE_MODEL
+        try:
+            from openai_client import openai_edit, openai_generate
+            op_prompt = f"{system_instruction}\n\n---\n\n{prompt}" if system_instruction else prompt
+            if image_b64:
+                pngs = openai_edit(
+                    prompt=op_prompt, image_b64=image_b64, mask_b64=mask_b64,
+                    reference_b64=reference_b64, n=1, size="2K", quality="medium",
+                )
+            else:
+                pngs = openai_generate(prompt=op_prompt, n=1, size="2K", quality="high")
+            if not pngs:
+                raise RuntimeError("OpenAI returned no image")
+            return {
+                "images": [f"data:image/png;base64,{base64.b64encode(pngs[0]).decode()}"],
+                "duration_ms": int((time.time() - t0) * 1000),
+                "model": OPENAI_IMAGE_MODEL,
+                "est_cost_usd": estimate_image_cost(OPENAI_IMAGE_MODEL, "2K"),
+            }
+        except Exception as e:
+            return {"error": str(e), "duration_ms": int((time.time() - t0) * 1000),
+                    "model": OPENAI_IMAGE_MODEL}
+
+    def _run_gemini():
+        t0 = time.time()
+        try:
+            from google.genai import types as gtypes
+            client = get_gemini_client()
+            parts = []
+            if image_b64:
+                parts.append(gtypes.Part.from_bytes(data=base64.b64decode(_clean(image_b64)), mime_type=image_mime))
+            if mask_b64 and image_b64:
+                parts.append(gtypes.Part.from_bytes(data=base64.b64decode(_clean(mask_b64)), mime_type="image/png"))
+            if reference_b64:
+                parts.append(gtypes.Part.from_bytes(data=base64.b64decode(_clean(reference_b64)), mime_type="image/png"))
+            parts.append(gtypes.Part.from_text(text=prompt))
+
+            image_config = None
+            try:
+                image_config = gtypes.ImageConfig(image_size="2K")
+            except Exception:
+                pass
+            cfg = gtypes.GenerateContentConfig(
+                response_modalities=["IMAGE"],
+                system_instruction=system_instruction or None,
+                image_config=image_config,
+            )
+            resp = client.models.generate_content(model=IMAGE_MODEL, contents=parts, config=cfg)
+            imgs = []
+            if resp.candidates:
+                for part in resp.candidates[0].content.parts:
+                    if hasattr(part, "inline_data") and part.inline_data:
+                        mime = part.inline_data.mime_type or "image/png"
+                        imgs.append(f"data:{mime};base64,{base64.b64encode(part.inline_data.data).decode()}")
+            if not imgs:
+                raise RuntimeError("Gemini returned no image")
+            return {
+                "images": imgs[:1],
+                "duration_ms": int((time.time() - t0) * 1000),
+                "model": IMAGE_MODEL,
+                "est_cost_usd": estimate_image_cost(IMAGE_MODEL, None),
+                "_usage": getattr(resp, "usage_metadata", None),
+            }
+        except Exception as e:
+            return {"error": str(e), "duration_ms": int((time.time() - t0) * 1000),
+                    "model": IMAGE_MODEL}
+
+    app.logger.info(f"[ab-compare] Running OpenAI + Gemini in parallel, has_image={bool(image_b64)}, has_mask={bool(mask_b64)}")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_openai = pool.submit(_run_openai)
+        f_gemini = pool.submit(_run_gemini)
+        result_openai = f_openai.result()
+        result_gemini = f_gemini.result()
+
+    # Log usage for each successful branch (failures are visible in the response)
+    for res in (result_openai, result_gemini):
+        if "images" in res:
+            log_usage(
+                request.user_id, "ab-compare", res["model"], 2,
+                res.pop("_usage", None), res["duration_ms"], True,
+                image_size="2K", n_images=1,
+                user_jwt=getattr(request, "user_jwt", None),
+            )
+        else:
+            res.pop("_usage", None)
+            app.logger.warning(f"[ab-compare] {res['model']} failed: {res.get('error')}")
+
+    if "images" not in result_openai and "images" not in result_gemini:
+        return jsonify({"error": "Ambos proveedores fallaron",
+                        "openai": result_openai, "gemini": result_gemini}), 500
+
+    return jsonify({"openai": result_openai, "gemini": result_gemini})
+
+
 @app.route("/api/enhance-image", methods=["POST"])
 @require_auth
 def enhance_image():

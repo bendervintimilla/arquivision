@@ -52,7 +52,26 @@ export interface GenerationMeta {
   estimated_cost_usd?: number;
 }
 
+export interface AbBranchResult {
+  images?: string[];
+  error?: string;
+  duration_ms: number;
+  model: string;
+  est_cost_usd?: number;
+}
+
 export const backendApi = {
+  // A/B lab: same prompt + image through OpenAI and Gemini in parallel.
+  abCompare: (data: {
+    prompt: string;
+    systemInstruction?: string;
+    image?: string | null;
+    imageMime?: string;
+    mask?: string;
+    referenceImage?: string | null;
+  }, signal?: AbortSignal) =>
+    apiCall<{ openai: AbBranchResult; gemini: AbBranchResult }>('/api/ab-compare', data, signal),
+
   generateImage: (data: {
     prompt: string;
     systemInstruction?: string;

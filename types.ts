@@ -30,6 +30,7 @@ export interface DesignStep {
   role: 'user' | 'model';
   text?: string;
   images?: string[]; // Array of base64 images (variations)
+  imageLabels?: string[]; // Per-image badge (A/B mode: provider · time · cost)
   selectedImageIndex?: number; // Which image the user picked to continue from
   isMaskEdit?: boolean; // Was this step created using a mask?
   floorPlanData?: FloorPlan; // If this step has vector data

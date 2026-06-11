@@ -253,8 +253,9 @@ export const generateArchitecturalVariations = async (
   qualityTier: number = 2,  // 0=Draft, 1=Standard, 2=HD, 3=Ultra
   additionalViews?: string[],  // Phase 6: extra views of same space (max 3)
   editHistory?: string[],      // Phase 2: cumulative previous commands
-  signal?: AbortSignal         // lets the UI cancel a long generation mid-flight
-): Promise<{ images: string[]; sceneAnalysis: SceneAnalysis | null; intent: EditIntent | null; promptSent: string; suggestMask?: boolean; meta?: GenerationMeta }> => {
+  signal?: AbortSignal,        // lets the UI cancel a long generation mid-flight
+  abMode?: boolean             // A/B lab: run OpenAI + Gemini in parallel and return both
+): Promise<{ images: string[]; sceneAnalysis: SceneAnalysis | null; intent: EditIntent | null; promptSent: string; suggestMask?: boolean; meta?: GenerationMeta; imageLabels?: string[] }> => {
 
   // --- NORMALIZE ALL IMAGES: convert blob: URLs to data:base64 ---
   let normalizedImg = await ensureBase64(img);
@@ -335,6 +336,49 @@ export const generateArchitecturalVariations = async (
   // --- REFERENCE IMAGE: Strong structured context ---
   if (normalizedRef && finalPrompt === prompt) {
     finalPrompt = `REFERENCE IMAGE PROVIDED:\n- IMAGE 1 (first image) is the CURRENT architectural design to modify.\n- IMAGE 2 (second image) is the STYLE/MATERIAL REFERENCE to draw inspiration from.\n- Extract materials, colors, textures, furniture styles, and architectural details from IMAGE 2.\n- Apply them to IMAGE 1 exactly as the user instructs below.\n- Do NOT copy the layout or composition of IMAGE 2 — only extract the stylistic elements.\n\nUSER REQUEST: ${prompt}`;
+  }
+
+  // --- A/B MODE: same final prompt through both providers, side by side ---
+  if (abMode) {
+    const ab = await backendApi.abCompare({
+      prompt: finalPrompt,
+      systemInstruction,
+      image: normalizedImg,
+      imageMime: mime,
+      mask: normalizedMask || undefined,
+      referenceImage: normalizedRef || undefined,
+    }, signal);
+
+    const abImages: string[] = [];
+    const abLabels: string[] = [];
+    const branches = [
+      { res: ab.openai, name: 'GPT-Image' },
+      { res: ab.gemini, name: 'Nano Banana' },
+    ];
+    for (const { res, name } of branches) {
+      if (res?.images?.[0]) {
+        abImages.push(res.images[0]);
+        const secs = Math.round((res.duration_ms || 0) / 1000);
+        const cost = res.est_cost_usd != null ? ` · $${res.est_cost_usd.toFixed(2)}` : '';
+        abLabels.push(`${name} · ${secs}s${cost}`);
+      } else if (res?.error) {
+        console.warn(`[A/B] ${name} failed:`, res.error);
+      }
+    }
+    if (abImages.length === 0) throw new Error('Ambos proveedores fallaron en la comparación A/B');
+
+    const watermarked = initials
+      ? await Promise.all(abImages.map(im => applyWatermark(im, initials)))
+      : abImages;
+    clearSceneCache();
+    return {
+      images: watermarked,
+      imageLabels: abLabels,
+      sceneAnalysis,
+      intent,
+      promptSent: finalPrompt,
+      suggestMask: intent?.suggestMask,
+    };
   }
 
   // --- IMAGE GENERATION (backend proxy only — API key never touches the frontend) ---

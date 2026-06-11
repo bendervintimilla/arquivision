@@ -79,6 +79,9 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
 
   // Quality tier: 0=Draft (Flash), 1=Standard (Pro 1K), 2=HD (Pro 2K), 3=Ultra (Pro 4K)
   const [qualityTier, setQualityTier] = useState<number>(2); // Default: HD
+  // A/B lab: when on, each generation runs OpenAI AND Gemini in parallel
+  // (HD-equivalent settings) and shows both results labeled for comparison.
+  const [abMode, setAbMode] = useState(false);
 
   // For Text-to-Image start
   const [startTextPrompt, setStartTextPrompt] = useState('');
@@ -290,7 +293,7 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
     // across ALL image-to-image models (Gemini, GPT, Flux). Better to warn
     // the user upfront than spend 2 min + $0.12 on something unlikely to
     // work. The classify call is cheap (~$0.0001).
-    if (!skipSpatialCheck && qualityTier > 0 && contextImage) {
+    if (!skipSpatialCheck && (qualityTier > 0 || abMode) && contextImage) {
       setAppState(AppState.GENERATING);
       setGenerationPhase('🧠 Verificando intención...');
       try {
@@ -367,10 +370,10 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
       // For Tier 0 (Gemini Flash, ~5-10s) a static phase is fine.
       // For Tier 1+ (OpenAI gpt-image-2, ~90-120s) we cycle through phases
       // so the user doesn't think the app froze during the reasoning loop.
-      if (qualityTier === 0) {
+      if (qualityTier === 0 && !abMode) {
         setGenerationPhase('⚡ Generando borrador rápido...');
       } else {
-        startProgressTimer(qualityTier);
+        startProgressTimer(abMode ? 2 : qualityTier);
       }
 
       // Phase 2: collect previous user commands from this session for
@@ -395,6 +398,7 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
         additionalViews,  // Phase 6
         editHistory,      // Phase 2
         controller.signal,
+        abMode,
       );
 
       stopProgressTimer();
@@ -405,6 +409,7 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
         id: `step-${Date.now()}-model`,
         role: 'model',
         images: result.images,
+        imageLabels: result.imageLabels,
         selectedImageIndex: 0,
         text: promptToUse
       };
@@ -602,6 +607,18 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
                           </button>
                         ))}
                       </div>
+
+                      {/* A/B Lab toggle — compare OpenAI vs Gemini side by side */}
+                      <button
+                        onClick={() => setAbMode(!abMode)}
+                        title="A/B Lab: genera el mismo render con GPT-Image y Nano Banana (Gemini) a la vez para comparar calidad, tiempo y costo"
+                        className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold border transition-all ${abMode
+                          ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
+                          : 'text-slate-500 hover:text-slate-300 border-slate-700/50 bg-slate-800/70'
+                          }`}
+                      >
+                        ⚖️ A/B
+                      </button>
                     </>
                   )}
 
@@ -668,6 +685,12 @@ export const PhotoEnhancer: React.FC<PhotoEnhancerProps> = ({
                             `}
                           >
                             <img src={img} alt="Variation" className="w-full object-contain bg-black" style={{ maxHeight: '70vh' }} />
+                            {/* A/B provider badge: model · time · cost */}
+                            {step.imageLabels?.[imgIdx] && (
+                              <div className="absolute top-4 left-4 bg-black/70 backdrop-blur-sm text-cyan-300 border border-cyan-500/40 px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider z-10">
+                                {step.imageLabels[imgIdx]}
+                              </div>
+                            )}
                             {step.selectedImageIndex === imgIdx && (
                               <div className="absolute top-4 right-4 bg-emerald-500 text-white p-1 rounded-full shadow-xl z-10">
                                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4"><path fillRule="evenodd" d="M16.704 4.153a.75.75 0 0 1-.143 1.052l-8 10.5a.75.75 0 0 1-1.127.075l-4.5-4.5a.75.75 0 0 1 1.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 0 1 1.05-.143Z" clipRule="evenodd" /></svg>
