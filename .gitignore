@@ -36,3 +36,6 @@ backend/.venv/
 *.njsproj
 *.sln
 *.sw?
+
+# Agent / assistant local state
+.claude/
