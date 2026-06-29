@@ -38,9 +38,12 @@ VIDEO_MODEL_STANDARD = "veo-3.1-generate-preview"  # Phase 5 fallback / quality 
 # Phase 1 (next): flip provider to "openai" for tiers 1/2/3 by changing this
 # table only — the dispatcher in main.py reads `provider` to choose the client.
 
-# Phase 1 ACTIVE: tiers 1/2/3 route to OpenAI gpt-image-2 by default.
-# Tier 0 stays on Gemini Flash (cheap iteration). On any OpenAI failure
-# the dispatcher walks FALLBACK_CHAIN to Gemini Pro then Gemini Flash.
+# 2026-06-29: tiers 1/2/3 route to Gemini Pro (gemini-3-pro-image) by default.
+# Flipped off OpenAI gpt-image-2 — the OpenAI account hit its billing hard
+# limit so every paid render failed over to Gemini anyway (slow + downgrade
+# warning). Gemini Pro is the GA best model, cheaper and faster. Tier 0 stays
+# on Gemini Flash. To re-enable OpenAI, set provider back to "openai" and
+# model to OPENAI_IMAGE_MODEL once billing is restored.
 TIER_CONFIG = {
     0: {
         "provider": "gemini",
@@ -50,22 +53,22 @@ TIER_CONFIG = {
         "label": "Draft",
     },
     1: {
-        "provider": "openai",
-        "model": OPENAI_IMAGE_MODEL,
+        "provider": "gemini",
+        "model": GEMINI_PRO_IMAGE,
         "image_size": "1K",
         "n": 2,  # batch of 2 variations for the architect to choose
         "label": "Standard",
     },
     2: {
-        "provider": "openai",
-        "model": OPENAI_IMAGE_MODEL,
+        "provider": "gemini",
+        "model": GEMINI_PRO_IMAGE,
         "image_size": "2K",
         "n": 2,  # batch of 2 variations at HD
         "label": "HD",
     },
     3: {
-        "provider": "openai",
-        "model": OPENAI_IMAGE_MODEL,
+        "provider": "gemini",
+        "model": GEMINI_PRO_IMAGE,
         "image_size": "4K",
         "n": 1,  # Ultra is the hero shot — single image, no batch
         "label": "Ultra",

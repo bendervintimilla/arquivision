@@ -749,16 +749,40 @@ def generate_image():
                 raise api_err
                 
         # Extract image data
-        images = []
-        text_parts = []
-        if response.candidates:
-            for part in response.candidates[0].content.parts:
-                if hasattr(part, 'inline_data') and part.inline_data:
-                    img_b64 = base64.b64encode(part.inline_data.data).decode()
-                    mime = part.inline_data.mime_type or "image/png"
-                    images.append(f"data:{mime};base64,{img_b64}")
-                elif hasattr(part, 'text') and part.text:
-                    text_parts.append(part.text[:200])
+        def _extract_images(resp):
+            out = []
+            txt = []
+            if resp.candidates:
+                for part in resp.candidates[0].content.parts:
+                    if hasattr(part, 'inline_data') and part.inline_data:
+                        img_b64 = base64.b64encode(part.inline_data.data).decode()
+                        mime = part.inline_data.mime_type or "image/png"
+                        out.append(f"data:{mime};base64,{img_b64}")
+                    elif hasattr(part, 'text') and part.text:
+                        txt.append(part.text[:200])
+            return out, txt
+
+        images, text_parts = _extract_images(response)
+
+        # Honor the tier's variation count: a single Gemini generate_content
+        # returns one image, so for n>1 we issue (n-1) more calls and collect
+        # the extra variations. A failed variation is non-fatal — we already
+        # have at least one image. (OpenAI honored `n` natively; Gemini doesn't.)
+        n_wanted = tier_cfg.get("n", 1)
+        if images and n_wanted > 1:
+            for _i in range(n_wanted - 1):
+                try:
+                    extra_resp = client.models.generate_content(
+                        model=selected_model,
+                        contents=parts,
+                        config=config,
+                    )
+                    extra_imgs, _ = _extract_images(extra_resp)
+                    if extra_imgs:
+                        images.append(extra_imgs[0])
+                except Exception as var_err:
+                    app.logger.warning(f"[generate-image] variation {_i + 2} failed: {var_err}")
+                    break
 
         if not images:
             app.logger.error(f"[generate-image] No images returned. Text parts: {text_parts}")
@@ -788,6 +812,7 @@ def generate_image():
                 "provider": "gemini",
                 "cap_hit": cap_hit,
                 "spent_usd_today": round(spent_today, 4),
+                "n": len(images),
             },
         })
 
