@@ -1415,6 +1415,61 @@ def admin_usage():
         return jsonify({"error": str(e)}), 500
 
 
+# ==============================================
+# NATIVE FUNCTION-CALLING AGENT (Conchita pattern)
+# ==============================================
+# Single endpoint where the model picks the tool (generate_render / edit_render /
+# analyze_plan) and the google-genai SDK runs the function-calling loop itself —
+# no LangChain, no ADK. Isolated from the deterministic /api/generate-image flow.
+
+@app.route("/api/agent", methods=["POST"])
+@require_auth
+def agent_endpoint():
+    t_start = time.time()
+    try:
+        from agent_tools import run_agent
+
+        data = request.json or {}
+        message = data.get("message", "") or data.get("prompt", "")
+        image_b64 = data.get("image", "")
+        image_mime = data.get("imageMime", "image/png")
+
+        if not message and not image_b64:
+            return jsonify({"error": "message or image is required"}), 400
+
+        # Budget cap (owner exempt) — agent tools can generate paid images.
+        if getattr(request, "user_id", None) != OWNER_USER_ID:
+            ok, spent = check_user_budget(request.user_id)
+            if not ok:
+                return jsonify({
+                    "text": f"Daily generation limit reached (${spent:.2f}). Try again tomorrow.",
+                    "images": [], "tools_used": [], "cap_hit": True,
+                }), 200
+
+        client = get_gemini_client()
+        result = run_agent(message, image_b64=image_b64, image_mime=image_mime, client=client)
+
+        app.logger.info(
+            f"[agent] tools={result.get('tools_used')} images={len(result.get('images', []))}"
+        )
+        log_usage(
+            request.user_id, "agent", FAST_MODEL, 2, None,
+            int((time.time() - t_start) * 1000), True,
+            n_images=len(result.get("images", [])),
+            user_jwt=getattr(request, "user_jwt", None),
+        )
+        return jsonify(result)
+
+    except Exception as e:
+        app.logger.error(f"[agent] Exception: {str(e)}")
+        log_usage(
+            getattr(request, "user_id", None), "agent", FAST_MODEL, 2, None,
+            int((time.time() - t_start) * 1000), False,
+            user_jwt=getattr(request, "user_jwt", None),
+        )
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
 
     if not GEMINI_API_KEY:
