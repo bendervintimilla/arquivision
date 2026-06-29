@@ -12,10 +12,12 @@ import os
 
 # Today's primary image model (tiers 1/2/3 by default)
 # Phase 1: this becomes the fallback; OPENAI_IMAGE_MODEL takes the primary slot.
-GEMINI_PRO_IMAGE = "gemini-3-pro-image-preview"
+# 2026-06-29: migrated preview -> GA (Google retiring the -preview aliases).
+GEMINI_PRO_IMAGE = "gemini-3-pro-image"
 
 # Draft / fast iteration image model (tier 0 always)
-GEMINI_FAST_IMAGE = "gemini-2.5-flash-image"
+# 2026-06-29: upgraded 2.5 -> 3.1 flash (GA).
+GEMINI_FAST_IMAGE = "gemini-3.1-flash-image"
 
 # Phase 1 target — env-overridable so we can swap without code changes
 OPENAI_IMAGE_MODEL = os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-2")
