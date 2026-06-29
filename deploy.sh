@@ -7,8 +7,9 @@ set -e
 PROJECT_ID="gen-lang-client-0947004571"
 REGION="europe-west1"
 
-# SECURITY: API keys are NEVER hardcoded. Read from environment.
-GEMINI_API_KEY="${GEMINI_API_KEY:?ERROR: Set GEMINI_API_KEY env var before deploying}"
+# SECURITY: API keys are NEVER hardcoded.
+# GEMINI_API_KEY now lives in Secret Manager (secret: gemini-api-key) and is
+# injected via --set-secrets below — no longer read from the shell environment.
 OPENAI_API_KEY="${OPENAI_API_KEY:?ERROR: Set OPENAI_API_KEY env var before deploying (Phase 1 swap to gpt-image-2)}"
 OPENAI_IMAGE_MODEL="${OPENAI_IMAGE_MODEL:-gpt-image-2}"
 OPENAI_IMAGE_TIMEOUT_S="${OPENAI_IMAGE_TIMEOUT_S:-180}"
@@ -50,7 +51,8 @@ BACKEND_URL=$(gcloud run deploy archivision-backend \
   --project "$PROJECT_ID" \
   --region "$REGION" \
   --allow-unauthenticated \
-  "--set-env-vars=^@^GEMINI_API_KEY=$GEMINI_API_KEY@OPENAI_API_KEY=$OPENAI_API_KEY@OPENAI_IMAGE_MODEL=$OPENAI_IMAGE_MODEL@OPENAI_IMAGE_TIMEOUT_S=$OPENAI_IMAGE_TIMEOUT_S@DAILY_USER_CAP_USD=$DAILY_USER_CAP_USD@ALLOWED_ORIGINS=$ALLOWED_ORIGINS@SUPABASE_URL=$SUPABASE_URL@SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY" \
+  "--set-env-vars=^@^OPENAI_API_KEY=$OPENAI_API_KEY@OPENAI_IMAGE_MODEL=$OPENAI_IMAGE_MODEL@OPENAI_IMAGE_TIMEOUT_S=$OPENAI_IMAGE_TIMEOUT_S@DAILY_USER_CAP_USD=$DAILY_USER_CAP_USD@ALLOWED_ORIGINS=$ALLOWED_ORIGINS@SUPABASE_URL=$SUPABASE_URL@SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY" \
+  --set-secrets=GEMINI_API_KEY=gemini-api-key:latest \
   --timeout=300 \
   --memory=512Mi \
   --quiet \
