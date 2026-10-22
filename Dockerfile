@@ -13,7 +13,9 @@ RUN npm ci
 COPY . .
 
 ARG VITE_SUPABASE_URL=https://axprxywbbrrlypfaycpb.supabase.co
-ARG VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF4cHJ4eXdiYnJybHlwZmF5Y3BiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkxNjEzODksImV4cCI6MjA4NDczNzM4OX0.0iIydaM-iFcabn-q63dqK_1CTLX8LRW_mGOr8qT0pZ0
+# O1748: la anon key ya no vive en el repo. Llega como build-arg
+# (deploy.sh -> cloudbuild.frontend.yaml) y el build falla si no está.
+ARG VITE_SUPABASE_ANON_KEY
 ARG VITE_BACKEND_URL=https://archivision-backend-d4v7u54w5a-ew.a.run.app
 ARG VITE_REQUIRE_AUTH=true
 
@@ -23,6 +25,7 @@ ENV VITE_BACKEND_URL=$VITE_BACKEND_URL
 ENV VITE_REQUIRE_AUTH=$VITE_REQUIRE_AUTH
 
 # Build
+RUN test -n "$VITE_SUPABASE_ANON_KEY" || (echo "ERROR: falta el build-arg VITE_SUPABASE_ANON_KEY (anon key de Supabase)" >&2; exit 1)
 RUN npm run build
 
 # Stage 2: Serve with Nginx

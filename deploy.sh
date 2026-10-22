@@ -15,8 +15,9 @@ OPENAI_IMAGE_MODEL="${OPENAI_IMAGE_MODEL:-gpt-image-2}"
 OPENAI_IMAGE_TIMEOUT_S="${OPENAI_IMAGE_TIMEOUT_S:-180}"
 DAILY_USER_CAP_USD="${DAILY_USER_CAP_USD:-25.0}"
 
-SUPABASE_URL="https://axprxywbbrrlypfaycpb.supabase.co"
-SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF4cHJ4eXdiYnJybHlwZmF5Y3BiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkxNjEzODksImV4cCI6MjA4NDczNzM4OX0.0iIydaM-iFcabn-q63dqK_1CTLX8LRW_mGOr8qT0pZ0"
+SUPABASE_URL="${SUPABASE_URL:-https://axprxywbbrrlypfaycpb.supabase.co}"
+# O1748: la anon key (pública por diseño) ya no va escrita en el repo.
+SUPABASE_ANON_KEY="${SUPABASE_ANON_KEY:?ERROR: exporta SUPABASE_ANON_KEY (anon key de Supabase) antes de desplegar}"
 
 # CORS allowlist for the backend. MUST include all production frontend URLs.
 # Phase 0 introduced strict CORS — if this is missing, the backend defaults to
@@ -76,12 +77,21 @@ cd "$SCRIPT_DIR"
 
 # SECURITY: Frontend does NOT receive the GEMINI_API_KEY.
 # Only public VITE_ variables are passed as build args.
+# Con Dockerfile, --set-build-env-vars de `gcloud run deploy --source` no llega
+# como build-arg; por eso la imagen se construye con Cloud Build pasando los
+# VITE_* como --build-arg y luego se despliega esa imagen.
+FRONTEND_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/cloud-run-source-deploy/archivision-frontend:$(date +%Y%m%d%H%M%S)"
+gcloud builds submit "$SCRIPT_DIR" \
+  --project "$PROJECT_ID" \
+  --config "$SCRIPT_DIR/cloudbuild.frontend.yaml" \
+  --substitutions="_IMAGE=$FRONTEND_IMAGE,_VITE_SUPABASE_URL=$SUPABASE_URL,_VITE_SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY,_VITE_BACKEND_URL=$BACKEND_URL" \
+  --quiet
+
 gcloud run deploy archivision-frontend \
-  --source . \
+  --image "$FRONTEND_IMAGE" \
   --project "$PROJECT_ID" \
   --region "$REGION" \
   --allow-unauthenticated \
-  --set-build-env-vars="VITE_SUPABASE_URL=$SUPABASE_URL,VITE_SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY,VITE_BACKEND_URL=$BACKEND_URL" \
   --memory=256Mi \
   --quiet
 
