@@ -1,0 +1,17 @@
+# Build del frontend con los VITE_* como build-args (O1748).
+# Lo invoca deploy.sh; los valores llegan por --substitutions, nunca desde el repo.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_IMAGE}
+      - --build-arg
+      - VITE_SUPABASE_URL=${_VITE_SUPABASE_URL}
+      - --build-arg
+      - VITE_SUPABASE_ANON_KEY=${_VITE_SUPABASE_ANON_KEY}
+      - --build-arg
+      - VITE_BACKEND_URL=${_VITE_BACKEND_URL}
+      - .
+images:
+  - ${_IMAGE}

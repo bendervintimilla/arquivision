@@ -1189,6 +1189,24 @@ def generate_video():
     import traceback
     import tempfile
 
+    user_id = getattr(request, "user_id", None)
+    ok, spent_today = check_user_budget(user_id)
+    if not ok:
+        return jsonify({
+            "error": "Llegaste al tope diario de uso. Vuelve a intentarlo mañana.",
+            "spent_today_usd": round(spent_today, 2),
+        }), 429
+
+    # Temporary fail-closed containment: usage_logs does not account for Veo,
+    # and the shared budget check fails open on monitoring outages. Checking
+    # that balance alone would still allow unlimited videos. Keep paid video
+    # unavailable to ordinary accounts until durable, atomic reservations and
+    # verified video pricing exist. Preserve the existing owner exemption.
+    if not user_id or user_id != OWNER_USER_ID:
+        return jsonify({
+            "error": "La generación de video está temporalmente deshabilitada mientras se habilita el control de gasto.",
+        }), 503
+
     try:
         data = request.json
         image_base64 = data.get("image", "")
